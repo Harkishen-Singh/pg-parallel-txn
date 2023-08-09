@@ -35,17 +35,14 @@ func main() {
 		panic(err)
 	}
 
+	state, err := LoadOrCreateState()
+	if err != nil {
+		log.Fatal("msg", "error loading state file", "error", err.Error())
+	}
+
 	pool := getPgxPool(uri, 1, int32(*maxConn))
 	defer pool.Close()
 	testConn(pool)
-
-	activeParallelIngest := new(sync.WaitGroup)
-	incomingTxn := make(chan *txnStatements, *numWorkers)
-	workers := []*worker{}
-	for i := 0; i < *numWorkers; i++ {
-		w := NewWorker(i, pool, incomingTxn, activeParallelIngest)
-		workers = append(workers, w)
-	}
 
 	files, err := os.ReadDir(*walPath)
 	if err != nil {
@@ -59,7 +56,14 @@ func main() {
 		}
 	}
 
-	
+	activeParallelIngest := new(sync.WaitGroup)
+	incomingTxn := make(chan *txnStatements, *numWorkers)
+	workers := []*worker{}
+	for i := 0; i < *numWorkers; i++ {
+		w := NewWorker(i, pool, incomingTxn, activeParallelIngest)
+		workers = append(workers, w)
+	}
+
 	scanner := bufio.NewScanner(file)
 	scanner.Split(bufio.ScanLines)
 

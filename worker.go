@@ -19,17 +19,17 @@ type txnStatements struct {
 }
 
 type worker struct {
-	id int
-	conn *pgxpool.Pool
-	incomingTxn <-chan *txnStatements
+	id                   int
+	conn                 *pgxpool.Pool
+	incomingTxn          <-chan *txnStatements
 	activeParallelIngest *sync.WaitGroup
 }
 
 func NewWorker(id int, pool *pgxpool.Pool, incomingTxn <-chan *txnStatements, activeParallelIngest *sync.WaitGroup) *worker {
 	return &worker{
-		id: id,
-		conn: pool,
-		incomingTxn: incomingTxn,
+		id:                   id,
+		conn:                 pool,
+		incomingTxn:          incomingTxn,
 		activeParallelIngest: activeParallelIngest,
 	}
 }
