@@ -253,7 +253,7 @@ func doSerialInsert(conn *pgxpool.Pool, t *txn) error {
 		batch.Queue(stmt)
 	}
 
-	r := conn.SendBatch(context.Background(), batch)
+	r := txn.SendBatch(context.Background(), batch)
 	_, err = r.Exec()
 	if err != nil {
 		return fmt.Errorf("error executing batch results: %w", err)

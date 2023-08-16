@@ -1,13 +1,14 @@
+//go:build darwin
 // +build darwin
 
 package main
 
 import (
+	"fmt"
 	"os"
 	"sort"
 	"syscall"
 	"time"
-	"fmt"
 )
 
 func sortFilesByCreationTime(files []string) ([]string, error) {

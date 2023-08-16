@@ -68,8 +68,6 @@ func (w *worker) Run() {
 
 			if err := txn.Commit(context.Background()); err != nil {
 				panic(err)
-				// log.Error("msg", "error commiting a txn", "error", err.Error())
-				// return
 			}
 		}
 		perform()
