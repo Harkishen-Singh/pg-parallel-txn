@@ -6,8 +6,14 @@ import (
 	"strings"
 )
 
-// CommitInfo represents the structure of the JSON data
-type CommitInfo struct {
+type BeginMetadata struct {
+	XID       int    `json:"xid"`
+	LSN       string `json:"lsn"`
+	Timestamp string `json:"timestamp"`
+	CommitLSN string `json:"commit_lsn"`
+}
+
+type CommitMetadata struct {
 	XID       int    `json:"xid"`
 	LSN       string `json:"lsn"`
 	Timestamp string `json:"timestamp"`
@@ -24,15 +30,27 @@ func extractJSON(line string) (string, error) {
 	return line[startIndex : endIndex+1], nil
 }
 
-func GetCommitInfoFromBeginStmt(line string) (CommitInfo, error) {
+func GetBeginMetadata(line string) BeginMetadata {
+	jsonStr, err := extractJSON(line)
+	if err != nil {
+		panic(err)
+	}
+	var beginInfo BeginMetadata
+	if err := json.Unmarshal([]byte(jsonStr), &beginInfo); err != nil {
+		panic(err)
+	}
+	return beginInfo
+}
+
+func GetCommitMetadata(line string) CommitMetadata {
 	jsonStr, err := extractJSON(line)
 	if err != nil {
 		panic(err)
 	}
 
-	var commitInfo CommitInfo
+	var commitInfo CommitMetadata
 	if err := json.Unmarshal([]byte(jsonStr), &commitInfo); err != nil {
 		panic(err)
 	}
-	return commitInfo, nil
+	return commitInfo
 }

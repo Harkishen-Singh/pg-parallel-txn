@@ -93,18 +93,23 @@ func main() {
 		os.Exit(0)
 	}()
 
+	stmts := []string{}
+	isTxnOpen := false // Helps to capture commits that are spread over multiple files.
+	beginMetadata := BeginMetadata{}
+	commitMetadata := CommitMetadata{}
 	for _, filePath := range pendingSQLFiles {
-		func(filePath string) {
-			log.Info("msg", fmt.Sprintf("reading txns from: %s", filePath))
-			start := time.Now()
+		totalTxns := getTotalTxns(filePath)
+		txnCount := 0
+
+		replayFile := func(filePath string) {
+			log.Info("msg", fmt.Sprintf("replaying txns from: %s", filePath))
+
 			file, err := os.Open(filePath)
 			if err != nil {
 				panic(err)
 			}
 			defer file.Close()
 
-			stmts := []string{}
-			txnCount := 0
 			scanner := bufio.NewScanner(file)
 			scanner.Split(bufio.ScanLines)
 		stop_scanning:
@@ -113,40 +118,41 @@ func main() {
 				switch {
 				case line[:6] == "BEGIN;":
 					stmts = []string{}
+					isTxnOpen = true
+					beginMetadata = GetBeginMetadata(line)
 				case line[:7] == "COMMIT;":
 					if skipTxns.Load() {
 						log.Info("msg", "skipping txns")
 						break stop_scanning
 					}
+					isTxnOpen = false
+
+					commitMetadata = GetCommitMetadata(line)
+					if beginMetadata.XID != commitMetadata.XID {
+						panic(fmt.Sprintf(
+							"falty txn. Begin.commitLSN: %s does not match Commit.LSN: %s",
+							beginMetadata.CommitLSN,
+							commitMetadata.LSN,
+						))
+					}
+
 					txnCount++
-					commitInfo, err := GetCommitInfoFromBeginStmt(line)
-					if err != nil {
-						panic(err)
-					}
-					if len(stmts) == 0 {
-						log.Debug("msg", "no statement to execute, skipping txn", "xid", commitInfo.XID)
-						return
-					}
-					t := &txn{
-						metadata: commitInfo,
-						stmts:    stmts,
-					}
-					if isInsertOnly(stmts) {
-						parallelTxnChannel <- t
-						log.Debug("msg", "execute parallel txn", "xid", commitInfo.XID, "txn-count", len(stmts))
-					} else {
-						// Wait for scheduled parallel txns to complete.
-						log.Debug("msg", "received a serial txn type. Waiting for scheduled parallel txns to complete")
-						activeParallelIngest.Wait()
-						log.Debug("msg", "execute serial txn", "xid", commitInfo.XID, "txn-count", len(stmts))
-						// Now all parallel txns have completed. Let's do the serial txn.
-						if err := doSerialInsert(pool, t); err != nil {
-							log.Fatal("msg", "error executing a serial txn", "xid", commitInfo.XID, "err", err.Error())
-						}
+					if len(stmts) > 0 {
+						performTxn(
+							pool,
+							commitMetadata.XID,
+							stmts,
+							parallelTxnChannel,
+							activeParallelIngest,
+							txnCount,
+							totalTxns,
+						)
 					}
 
 				// Ignore statements.
-				case line[:11] == "-- KEEPALIVE":
+				case line[:12] == "-- KEEPALIVE":
+					continue
+				case line[:13] == "-- SWITCH WAL":
 					continue
 
 				default:
@@ -156,10 +162,54 @@ func main() {
 			if err := scanner.Err(); err != nil {
 				log.Fatal("msg", "error scanning file", "error", err.Error(), "file", filePath)
 			}
-			log.Info("msg", "waiting for scheduled txns to complete", "total_txn_count", txnCount)
-			activeParallelIngest.Wait()
-			log.Info("msg", "completed replaying file", "time-taken", time.Since(start), "file", filePath)
-		}(filePath)
+		}
+		start := time.Now()
+		replayFile(filePath)
+		// Lets wait for previous batch to complete before moving to the next batch.
+		log.Info("msg", "waiting for scheduled txns to complete", "total_txn_count", txnCount)
+		if isTxnOpen {
+			log.Info("msg",
+				fmt.Sprintf("found a txn (xid:%d) that stretches beyond current file. Holding its contents till the previous batch completes", commitMetadata.XID))
+		}
+		activeParallelIngest.Wait()
+		log.Info("msg", "completed replaying file", "time-taken", time.Since(start), "file", filePath)
+	}
+}
+
+func performTxn(
+	pool *pgxpool.Pool,
+	xid int,
+	stmts []string,
+	parallelTxnChannel chan<- *txn,
+	activeParallelIngest *sync.WaitGroup,
+	txnCount int,
+	totalTxns int,
+) {
+	t := &txn{
+		stmts: stmts,
+	}
+	if isInsertOnly(stmts) {
+		parallelTxnChannel <- t
+		log.Debug(
+			"msg", "execute parallel txn",
+			"xid", xid,
+			"num_stmts", len(stmts),
+			"progress", fmt.Sprintf("%d/%d", txnCount, totalTxns))
+	} else {
+		// Wait for scheduled parallel txns to complete.
+		log.Debug("msg", fmt.Sprintf(
+			"received a serial txn type (xid:%d); waiting for scheduled parallel txns to complete", xid,
+		))
+		activeParallelIngest.Wait()
+		log.Debug(
+			"msg", "execute serial txn",
+			"xid", xid,
+			"num_stmts", len(stmts),
+			"progress", fmt.Sprintf("%d/%d", txnCount, totalTxns))
+		// Now all parallel txns have completed. Let's do the serial txn.
+		if err := doSerialInsert(pool, t); err != nil {
+			log.Fatal("msg", "error executing a serial txn", "xid", xid, "err", err.Error())
+		}
 	}
 }
 
@@ -170,6 +220,25 @@ func isInsertOnly(stmts []string) bool {
 		}
 	}
 	return true
+}
+
+func getTotalTxns(file string) int {
+	f, err := os.Open(file)
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+
+	totalTxns := 0
+	scanner := bufio.NewScanner(f)
+	scanner.Split(bufio.ScanLines)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line[:7] == "COMMIT;" {
+			totalTxns++
+		}
+	}
+	return totalTxns
 }
 
 func doSerialInsert(conn *pgxpool.Pool, t *txn) error {

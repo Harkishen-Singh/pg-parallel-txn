@@ -15,8 +15,7 @@ import (
 // These statements do not include BEGIN; & COMMIT;, rather
 // the ones between them.
 type txn struct {
-	metadata CommitInfo
-	stmts    []string
+	stmts []string
 }
 
 type worker struct {
