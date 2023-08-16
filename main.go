@@ -122,7 +122,7 @@ func main() {
 					beginMetadata = GetBeginMetadata(line)
 				case line[:7] == "COMMIT;":
 					if skipTxns.Load() {
-						log.Info("msg", "skipping txns")
+						log.Debug("msg", "skipping txns")
 						break stop_scanning
 					}
 					isTxnOpen = false
@@ -165,7 +165,7 @@ func main() {
 		}
 		start := time.Now()
 		replayFile(filePath)
-		// Lets wait for previous batch to complete before moving to the next batch.
+		// Let's wait for previous batch to complete before moving to the next batch.
 		log.Info("msg", "waiting for scheduled txns to complete", "total_txn_count", txnCount)
 		if isTxnOpen {
 			log.Info("msg",
