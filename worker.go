@@ -10,22 +10,23 @@ import (
 	"github.com/timescale/promscale/pkg/log"
 )
 
-// txnStatements contains all the statements that are part of
+// txn contains all the statements that are part of
 // a transaction in the order in which they are received.
 // These statements do not include BEGIN; & COMMIT;, rather
 // the ones between them.
-type txnStatements struct {
-	stmts []string
+type txn struct {
+	metadata CommitInfo
+	stmts    []string
 }
 
 type worker struct {
 	id                   int
 	conn                 *pgxpool.Pool
-	incomingTxn          <-chan *txnStatements
+	incomingTxn          <-chan *txn
 	activeParallelIngest *sync.WaitGroup
 }
 
-func NewWorker(id int, pool *pgxpool.Pool, incomingTxn <-chan *txnStatements, activeParallelIngest *sync.WaitGroup) *worker {
+func NewWorker(id int, pool *pgxpool.Pool, incomingTxn <-chan *txn, activeParallelIngest *sync.WaitGroup) *worker {
 	return &worker{
 		id:                   id,
 		conn:                 pool,
@@ -49,6 +50,7 @@ func (w *worker) Run() {
 				log.Error("msg", "error starting a txn", "error", err.Error())
 				return
 			}
+			defer txn.Rollback(context.Background())
 
 			batch := &pgx.Batch{}
 			for _, stmt := range stmts.stmts {
@@ -56,20 +58,19 @@ func (w *worker) Run() {
 			}
 
 			r := txn.SendBatch(context.Background(), batch)
-			rows, err := r.Query()
-			if err != nil {
+			if _, err := r.Exec(); err != nil {
 				log.Error("msg", "error querying batch results", "error", err.Error())
 				return
 			}
-			rows.Close()
-			if err := rows.Err(); err != nil {
+			if err = r.Close(); err != nil {
 				log.Error("msg", "error closing rows from batch", "error", err.Error())
 				return
 			}
 
 			if err := txn.Commit(context.Background()); err != nil {
-				log.Error("msg", "error commiting a txn", "error", err.Error(), "txn-statements", stmts.stmts)
-				return
+				panic(err)
+				// log.Error("msg", "error commiting a txn", "error", err.Error())
+				// return
 			}
 		}
 		perform()
