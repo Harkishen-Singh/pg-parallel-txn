@@ -5,6 +5,7 @@ import (
 	"sort"
 	"syscall"
 	"time"
+	"fmt"
 )
 
 func sortFilesByCreationTime(files []string) ([]string, error) {
@@ -21,10 +22,14 @@ func sortFilesByCreationTime(files []string) ([]string, error) {
 			return nil, err
 		}
 
-		statT := info.Sys().(*syscall.Stat_t)
-		creationTime := time.Unix(int64(statT.Birthtimespec.Sec), int64(statT.Birthtimespec.Nsec))
+		statT, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return nil, fmt.Errorf("failed to cast to syscall.Stat_t")
+		}
 
-		fileTimes[i] = fileWithTime{name: file, time: creationTime}
+		changeTime := time.Unix(int64(statT.Ctimespec.Sec), int64(statT.Ctimespec.Nsec))
+
+		fileTimes[i] = fileWithTime{name: file, time: changeTime}
 	}
 
 	sort.Slice(fileTimes, func(i, j int) bool {
