@@ -27,7 +27,7 @@ func sortFilesByCreationTime(files []string) ([]string, error) {
 			return nil, fmt.Errorf("failed to cast to syscall.Stat_t")
 		}
 
-		changeTime := time.Unix(int64(statT.Mtimespec.Sec), int64(statT.Mtimespec.Nsec))
+		changeTime := time.Unix(int64(statT.Ctim.Sec), int64(statT.Ctim.Nsec))
 
 		fileTimes[i] = fileWithTime{name: file, time: changeTime}
 	}
