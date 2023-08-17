@@ -117,7 +117,7 @@ func main() {
 		txnCount := int64(0)
 
 		replayFile := func(filePath string) {
-			log.Info("msg", fmt.Sprintf("replaying txns from: %s", filePath))
+			log.Info("Replaying", getFileName(filePath), "total_txns", txnCount)
 
 			file, err := os.Open(filePath)
 			if err != nil {
@@ -184,13 +184,13 @@ func main() {
 		start := time.Now()
 		replayFile(filePath)
 		// Let's wait for previous batch to complete before moving to the next batch.
-		log.Info("msg", "waiting for scheduled txns to complete", "total_txn_count", txnCount)
+		log.Info("msg", "waiting for batch to complete")
 		if isTxnOpen {
-			log.Info("msg",
+			log.Debug("msg",
 				fmt.Sprintf("found a txn (xid:%d) that stretches beyond current file. Holding its contents till the previous batch completes", commitMetadata.XID))
 		}
 		activeParallelIngest.Wait()
-		log.Info("msg", "completed replaying file", "time-taken", time.Since(start), "file", filePath)
+		log.Info("done", time.Since(start).String())
 	}
 }
 
@@ -311,4 +311,8 @@ func testConn(conn interface {
 	}
 	log.Info("msg", "connected to the database")
 	return true
+}
+
+func getFileName(path string) string {
+	return filepath.Base(path)
 }
