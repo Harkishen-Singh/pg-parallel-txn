@@ -22,11 +22,15 @@ import (
 const WAL_SCAN_INTERVAL = 10 * time.Second
 
 func main() {
-	uri := flag.String("uri", "", "Database URI to write data.")
+	sourceUri := flag.String("source_uri", "", "Source database URI to update LSN pointer.")
+	targetUri := flag.String("target_uri", "", "Target database URI to write data.")
 	walPath := flag.String("wal_dir", "work_dir", "Path of dir where WAL segments.")
 	level := flag.String("level", "info", "Log level to use from [ 'error', 'warn', 'info', 'debug' ].")
 	numWorkers := flag.Int("num_workers", 20, "Number of parallel workers.")
 	maxConn := flag.Int("max_conn", 20, "Maximum number of connections in the pool.")
+	proceedLSNAfterXids := flag.Int64("proceed_lsn_after", 10_000, "Proceed LSN marker in Source DB after '-proceed_lsn_after' txns. "+
+		"A higher number causes less interruption in parallelism, but risks more duplicate data in case of a crash.")
+	noProceed := flag.Bool("no_lsn_proceed", false, "Development only. Do not proceed LSN. Source db uri is not needed.")
 	flag.Parse()
 
 	logCfg := log.Config{
@@ -37,8 +41,8 @@ func main() {
 		panic(err)
 	}
 
-	if *uri == "" {
-		log.Fatal("msg", "please provide a database URI using the -uri flag.")
+	if *targetUri == "" {
+		log.Fatal("msg", "please provide database URIs for '-target_uri' flags")
 	}
 
 	// state, err := LoadOrCreateState()
@@ -46,7 +50,7 @@ func main() {
 	// 	log.Fatal("msg", "error loading state file", "error", err.Error())
 	// }
 
-	pool := getPgxPool(uri, 1, int32(*maxConn))
+	pool := getPgxPool(targetUri, 1, int32(*maxConn))
 	defer pool.Close()
 	testConn(pool)
 
@@ -93,13 +97,24 @@ func main() {
 		os.Exit(0)
 	}()
 
+	// Setup LSN proceeder.
+	lsnp := NewNoopProceeder()
+	if !*noProceed {
+		sourceConn, err := pgx.Connect(context.Background(), *sourceUri)
+		if err != nil {
+			log.Fatal("msg", "unable to connect to source database", "err", err.Error())
+		}
+		defer sourceConn.Close(context.Background())
+		lsnp = NewLSNProceeder(sourceConn, *proceedLSNAfterXids, activeParallelIngest)
+	}
+
 	stmts := []string{}
 	isTxnOpen := false // Helps to capture commits that are spread over multiple files.
 	beginMetadata := BeginMetadata{}
 	commitMetadata := CommitMetadata{}
 	for _, filePath := range pendingSQLFiles {
 		totalTxns := getTotalTxns(filePath)
-		txnCount := 0
+		txnCount := int64(0)
 
 		replayFile := func(filePath string) {
 			log.Info("msg", fmt.Sprintf("replaying txns from: %s", filePath))
@@ -129,8 +144,14 @@ func main() {
 
 					commitMetadata = GetCommitMetadata(line)
 					if beginMetadata.XID != commitMetadata.XID {
+						// This serves as an important check for txns that are spread over multiple files.
+						// Though we read the WAL files in order in which they are created, we need a
+						// reliable way to check if the txn we constructed has correct contents or not.
+						//
+						// When commits are spread over files, the Begin_txn_id is in a different file than
+						// Commit_txn_id. Hence, the xid of Begin & Commit txn_id must be same.
 						panic(fmt.Sprintf(
-							"falty txn. Begin.commitLSN: %s does not match Commit.LSN: %s",
+							"FATAL: Falty txn constructed. Begin.XID (%s) does not match Commit.XID (%s)",
 							beginMetadata.CommitLSN,
 							commitMetadata.LSN,
 						))
@@ -148,6 +169,7 @@ func main() {
 							totalTxns,
 						)
 					}
+					lsnp.IncrementTxn(commitMetadata.LSN)
 				case line[:3] == "-- ":
 					// Ignore all comments.
 					continue
@@ -174,12 +196,12 @@ func main() {
 
 func performTxn(
 	pool *pgxpool.Pool,
-	xid int,
+	xid int64,
 	stmts []string,
 	parallelTxnChannel chan<- *txn,
 	activeParallelIngest *sync.WaitGroup,
-	txnCount int,
-	totalTxns int,
+	txnCount int64,
+	totalTxns int64,
 ) {
 	t := &txn{
 		stmts: stmts,
@@ -218,14 +240,14 @@ func isInsertOnly(stmts []string) bool {
 	return true
 }
 
-func getTotalTxns(file string) int {
+func getTotalTxns(file string) int64 {
 	f, err := os.Open(file)
 	if err != nil {
 		panic(err)
 	}
 	defer f.Close()
 
-	totalTxns := 0
+	totalTxns := int64(0)
 	scanner := bufio.NewScanner(f)
 	scanner.Split(bufio.ScanLines)
 	for scanner.Scan() {
@@ -280,7 +302,9 @@ func getPgxPool(uri *string, min, max int32) *pgxpool.Pool {
 	return dbpool
 }
 
-func testConn(conn *pgxpool.Pool) bool {
+func testConn(conn interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}) bool {
 	var t int
 	if err := conn.QueryRow(context.Background(), "SELECT 1").Scan(&t); err != nil {
 		panic(err)

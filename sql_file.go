@@ -7,14 +7,14 @@ import (
 )
 
 type BeginMetadata struct {
-	XID       int    `json:"xid"`
+	XID       int64  `json:"xid"`
 	LSN       string `json:"lsn"`
 	Timestamp string `json:"timestamp"`
 	CommitLSN string `json:"commit_lsn"`
 }
 
 type CommitMetadata struct {
-	XID       int    `json:"xid"`
+	XID       int64  `json:"xid"`
 	LSN       string `json:"lsn"`
 	Timestamp string `json:"timestamp"`
 }
