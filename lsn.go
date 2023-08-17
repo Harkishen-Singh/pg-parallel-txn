@@ -12,6 +12,7 @@ const PROCEED_LSN = "update pgcopydb.sentinel set replay_lsn = $1"
 
 type LSNProceeder interface {
 	IncrementTxn(commitLSN string)
+	Proceed()
 }
 
 type proceedLSN struct {
@@ -19,6 +20,7 @@ type proceedLSN struct {
 	parallelIngest        *sync.WaitGroup
 	numXidsToProceedAfter int64
 	currentXid            int64
+	lastCommitLSN         string
 }
 
 func NewLSNProceeder(conn *pgx.Conn, numXidsToProceedAfter int64, parallelIngest *sync.WaitGroup) LSNProceeder {
@@ -31,14 +33,21 @@ func NewLSNProceeder(conn *pgx.Conn, numXidsToProceedAfter int64, parallelIngest
 
 func (p *proceedLSN) IncrementTxn(commitLSN string) {
 	p.currentXid++
+	p.lastCommitLSN = commitLSN
 	if p.currentXid > p.numXidsToProceedAfter {
-		log.Info("msg", "proceeding LSN. Waiting for parallel txns to complete")
+		log.Info("msg", "Proceeding LSN. Waiting for parallel txns to complete")
 		p.parallelIngest.Wait()
-		log.Info("msg", "proceeding LSN", "LSN", commitLSN)
+		log.Info("msg", "Proceeding LSN", "LSN", commitLSN)
 		if err := p.proceed(commitLSN); err != nil {
 			log.Fatal("msg", "could not proceed LSN in Source DB", "err", err.Error())
 		}
 		p.currentXid = 0
+	}
+}
+
+func (p *proceedLSN) Proceed() {
+	if err := p.proceed(p.lastCommitLSN); err != nil {
+		log.Fatal("msg", "manual proceed: could not proceed LSN in Source DB", "err", err.Error())
 	}
 }
 
@@ -54,3 +63,4 @@ func NewNoopProceeder() LSNProceeder {
 }
 
 func (n noopProceeder) IncrementTxn(string) {}
+func (n noopProceeder) Proceed()            {}

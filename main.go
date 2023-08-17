@@ -28,8 +28,9 @@ func main() {
 	level := flag.String("level", "info", "Log level to use from [ 'error', 'warn', 'info', 'debug' ].")
 	numWorkers := flag.Int("num_workers", 20, "Number of parallel workers.")
 	maxConn := flag.Int("max_conn", 20, "Maximum number of connections in the pool.")
-	proceedLSNAfterXids := flag.Int64("proceed_lsn_after", 10_000, "Proceed LSN marker in Source DB after '-proceed_lsn_after' txns. "+
-		"A higher number causes less interruption in parallelism, but risks more duplicate data in case of a crash.")
+	proceedLSNAfterXids := flag.Int64("proceed_lsn_after", 0, "Proceed LSN marker in Source DB after '-proceed_lsn_after' txns. "+
+		"A higher number causes less interruption in parallelism, but risks more duplicate data in case of a crash. "+
+		"If 0, LSN pointer proceeds after a batch completes. The size of a typical batch is the number of txns in a WAL file.")
 	noProceed := flag.Bool("no_lsn_proceed", false, "Development only. Do not proceed LSN. Source db uri is not needed.")
 	flag.Parse()
 
@@ -89,7 +90,7 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT)
 	go func() {
 		<-sigChan
-		log.Info("msg", "waiting for parallel workers to complete before shutdown")
+		log.Info("msg", "Waiting for parallel workers to complete before shutdown")
 		skipTxns.Store(true)
 		activeParallelIngest.Wait()
 		close(parallelTxnChannel)
@@ -184,13 +185,17 @@ func main() {
 		start := time.Now()
 		replayFile(filePath)
 		// Let's wait for previous batch to complete before moving to the next batch.
-		log.Info("msg", "waiting for batch to complete")
 		if isTxnOpen {
 			log.Debug("msg",
 				fmt.Sprintf("found a txn (xid:%d) that stretches beyond current file. Holding its contents till the previous batch completes", commitMetadata.XID))
 		}
+		log.Info("msg", "Waiting for batch to complete")
+		if *proceedLSNAfterXids == 0 {
+			// Proceed LSN after batch completes is activated.
+			lsnp.Proceed()
+		}
 		activeParallelIngest.Wait()
-		log.Info("done", time.Since(start).String())
+		log.Info("Done", time.Since(start).String())
 	}
 }
 
