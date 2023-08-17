@@ -52,9 +52,17 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 				line := scanner.Text()
 				switch {
 				case line[:6] == "BEGIN;":
+					beginMetadata = GetBeginMetadata(line)
+					if isTxnOpen {
+						panic(fmt.Sprintf(
+							"Faulty txn: Cannot start a new txn when a txn is already open. Something is wrong; I should crash. File=>%s xid=>%d lsn=>%s",
+							getFileName(filePath),
+							beginMetadata.XID,
+							beginMetadata.LSN,
+						))
+					}
 					stmts = []string{}
 					isTxnOpen = true
-					beginMetadata = GetBeginMetadata(line)
 				case line[:7] == "COMMIT;":
 					if r.skipTxns.Load() {
 						log.Debug("msg", "skipping txns")
@@ -71,7 +79,7 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 						// When commits are spread over files, the Begin_txn_id is in a different file than
 						// Commit_txn_id. Hence, the xid of Begin & Commit txn_id must be same.
 						panic(fmt.Sprintf(
-							"FATAL: Falty txn constructed. Begin.XID (%d) does not match Commit.XID (%d). File: %s",
+							"FATAL: Faulty txn constructed. Begin.XID (%d) does not match Commit.XID (%d). File: %s",
 							beginMetadata.XID,
 							commitMetadata.XID,
 							getFileName(filePath),
