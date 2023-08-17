@@ -11,16 +11,16 @@ import (
 const STATE_FILE_NAME = "pg-parallel-txn-state.json"
 const STATE_FILE_FORMAT = 1
 
-type wal_file struct {
-	FileName              string `json:"file_name"`
-	WalFileName           string `json:"wal_file_name"`
-	NameInDecimalNotation string `json:"name_in_decimal_notation"`
+type current struct {
+	FileName string `json:"file"`
+	LastXID  string `json:"last_xid"`
+	LastLSN  string `json:"last_lsn"`
 }
 
 type state struct {
-	Version           int8       `json:"version"`
-	WalFilesProcessed []wal_file `json:"wal_files_processed"`
-	WalFileInProgress wal_file   `json:"wal_file_in_progress"`
+	Format         int8     `json:"format"`
+	CompletedFiles []string `json:"completed_files"`
+	Current        current  `json:"wal_files_processed"`
 }
 
 func (s *state) Write() error {
@@ -33,9 +33,9 @@ func (s *state) Write() error {
 
 func LoadOrCreateState() (*state, error) {
 	if _, err := os.Stat(STATE_FILE_NAME); os.IsNotExist(err) {
-		// If the file does not exist, create an empty state and write it to the file.
+		// If the file does not exist, initialise one and write it to the file.
 		emptyState := &state{
-			Version: STATE_FILE_FORMAT,
+			Format: STATE_FILE_FORMAT,
 		}
 		data, err := json.Marshal(emptyState)
 		if err != nil {

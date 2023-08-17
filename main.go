@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -19,7 +18,7 @@ import (
 	"github.com/timescale/promscale/pkg/log"
 )
 
-const WAL_SCAN_INTERVAL = 10 * time.Second
+const WAL_SCAN_INTERVAL = time.Minute
 
 func main() {
 	sourceUri := flag.String("source_uri", "", "Source database URI to update LSN pointer.")
@@ -56,46 +55,14 @@ func main() {
 	pool := getPgxPool(targetUri, 1, int32(*maxConn))
 	defer pool.Close()
 	testConn(pool)
-	log.Info("msg", "connected to target database")
+	log.Info("msg", "Connected to target database")
 
-	absWalDir, err := filepath.Abs(*walPath)
-	if err != nil {
-		panic(err)
-	}
-
-	files, err := os.ReadDir(absWalDir)
-	if err != nil {
-		log.Fatal("msg", "error reading WAL path", "error", err.Error())
-	}
-
-	sqlFiles := []string{}
-	for _, file := range files {
-		if file.Type().IsRegular() && strings.HasSuffix(file.Name(), ".sql") {
-			sqlFiles = append(sqlFiles, filepath.Join(absWalDir, file.Name()))
-		}
-	}
-	if len(sqlFiles) == 0 {
-		log.Info("msg", "No files to replay")
-	}
-
-	var pendingSQLFiles []string
-	switch *sortingMethod {
-	case "change_time":
-		pendingSQLFiles, err = sortFilesByChangeTime(sqlFiles)
-	case "hexadecimal":
-		pendingSQLFiles, err = sortFilesByName(sqlFiles)
-	}
-	if err != nil {
-		panic(err)
-	}
-	log.Info("msg", fmt.Sprintf("Found %d files to be replayed", len(pendingSQLFiles)))
-
-	var skipTxns atomic.Bool
+	skipTxns := new(atomic.Bool)
 	skipTxns.Store(false)
-	activeParallelIngest := new(sync.WaitGroup)
+	activeIngests := new(sync.WaitGroup)
 	parallelTxnChannel := make(chan *txn, *numWorkers)
 	for i := 0; i < *numWorkers; i++ {
-		w := NewWorker(i, pool, parallelTxnChannel, activeParallelIngest)
+		w := NewWorker(i, pool, parallelTxnChannel, activeIngests)
 		go w.Run()
 	}
 
@@ -105,7 +72,7 @@ func main() {
 		<-sigChan
 		log.Info("msg", "Waiting for parallel workers to complete before shutdown")
 		skipTxns.Store(true)
-		activeParallelIngest.Wait()
+		activeIngests.Wait()
 		close(parallelTxnChannel)
 		log.Info("msg", "Shutting down")
 		os.Exit(0)
@@ -120,194 +87,62 @@ func main() {
 		}
 		defer sourceConn.Close(context.Background())
 		testConn(sourceConn)
-		log.Info("msg", "connected to source database")
-		lsnp = NewLSNProceeder(sourceConn, *proceedLSNAfterXids, activeParallelIngest)
+		log.Info("msg", "Connected to source database")
+		lsnp = NewLSNProceeder(sourceConn, *proceedLSNAfterXids, activeIngests)
 	}
 
-	stmts := []string{}
-	isTxnOpen := false // Helps to capture commits that are spread over multiple files.
-	beginMetadata := BeginMetadata{}
-	commitMetadata := CommitMetadata{}
-	for fileCount, filePath := range pendingSQLFiles {
-		totalTxns := getTotalTxns(filePath)
-		txnCount := int64(0)
-
-		replayFile := func(filePath string) {
-			log.Info("Replaying", getFileName(filePath), "total_txns", totalTxns, "progress", fmt.Sprintf("%d/%d", fileCount, len(pendingSQLFiles)))
-
-			file, err := os.Open(filePath)
-			if err != nil {
-				panic(err)
-			}
-			defer file.Close()
-
-			scanner := bufio.NewScanner(file)
-			scanner.Split(bufio.ScanLines)
-		stop_scanning:
-			for scanner.Scan() {
-				line := scanner.Text()
-				switch {
-				case line[:6] == "BEGIN;":
-					stmts = []string{}
-					isTxnOpen = true
-					beginMetadata = GetBeginMetadata(line)
-				case line[:7] == "COMMIT;":
-					if skipTxns.Load() {
-						log.Debug("msg", "skipping txns")
-						break stop_scanning
-					}
-					isTxnOpen = false
-
-					commitMetadata = GetCommitMetadata(line)
-					if beginMetadata.XID != commitMetadata.XID {
-						// This serves as an important check for txns that are spread over multiple files.
-						// Though we read the WAL files in order in which they are created, we need a
-						// reliable way to check if the txn we constructed has correct contents or not.
-						//
-						// When commits are spread over files, the Begin_txn_id is in a different file than
-						// Commit_txn_id. Hence, the xid of Begin & Commit txn_id must be same.
-						panic(fmt.Sprintf(
-							"FATAL: Falty txn constructed. Begin.XID (%d) does not match Commit.XID (%d). File: %s",
-							beginMetadata.XID,
-							commitMetadata.XID,
-							getFileName(filePath),
-						))
-					}
-
-					txnCount++
-					if len(stmts) > 0 {
-						performTxn(
-							pool,
-							commitMetadata.XID,
-							stmts,
-							parallelTxnChannel,
-							activeParallelIngest,
-							txnCount,
-							totalTxns,
-						)
-					}
-					lsnp.IncrementTxn(commitMetadata.LSN)
-				case line[:3] == "-- ":
-					// Ignore all comments.
-					continue
-				default:
-					stmts = append(stmts, line)
-				}
-			}
-			if err := scanner.Err(); err != nil {
-				log.Fatal("msg", "error scanning file", "error", err.Error(), "file", filePath)
-			}
-		}
-		start := time.Now()
-		replayFile(filePath)
-		// Let's wait for previous batch to complete before moving to the next batch.
-		if isTxnOpen {
-			log.Debug("msg",
-				fmt.Sprintf("found a txn (xid:%d) that stretches beyond current file. Holding its contents till the previous batch completes", commitMetadata.XID))
-		}
-		log.Info("msg", "Waiting for batch to complete")
-		activeParallelIngest.Wait()
-		if *proceedLSNAfterXids == 0 {
-			// Proceed LSN after batch completes is activated.
-			lsnp.Proceed()
-		}
-		log.Info("Done", time.Since(start).String())
-	}
-	log.Info("msg", "Shutting down")
-}
-
-func performTxn(
-	pool *pgxpool.Pool,
-	xid int64,
-	stmts []string,
-	parallelTxnChannel chan<- *txn,
-	activeParallelIngest *sync.WaitGroup,
-	txnCount int64,
-	totalTxns int64,
-) {
-	t := &txn{
-		stmts: stmts,
-	}
-	if isInsertOnly(stmts) {
-		parallelTxnChannel <- t
-		log.Debug(
-			"msg", "execute parallel txn",
-			"xid", xid,
-			"num_stmts", len(stmts),
-			"progress", fmt.Sprintf("%d/%d", txnCount, totalTxns))
-	} else {
-		// Wait for scheduled parallel txns to complete.
-		log.Debug("msg", fmt.Sprintf(
-			"received a serial txn type (xid:%d); waiting for scheduled parallel txns to complete", xid,
-		))
-		activeParallelIngest.Wait()
-		log.Debug(
-			"msg", "execute serial txn",
-			"xid", xid,
-			"num_stmts", len(stmts),
-			"progress", fmt.Sprintf("%d/%d", txnCount, totalTxns))
-		// Now all parallel txns have completed. Let's do the serial txn.
-		if err := doSerialInsert(pool, t); err != nil {
-			log.Fatal("msg", "error executing a serial txn", "xid", xid, "err", err.Error())
-		}
-	}
-}
-
-func isInsertOnly(stmts []string) bool {
-	for _, s := range stmts {
-		if s[:11] != "INSERT INTO" {
-			return false
-		}
-	}
-	return true
-}
-
-func getTotalTxns(file string) int64 {
-	f, err := os.Open(file)
+	absWalDir, err := filepath.Abs(*walPath)
 	if err != nil {
 		panic(err)
 	}
-	defer f.Close()
 
-	totalTxns := int64(0)
-	scanner := bufio.NewScanner(f)
-	scanner.Split(bufio.ScanLines)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line[:7] == "COMMIT;" {
-			totalTxns++
-		}
+	replayer := Replayer{
+		pool:                 pool,
+		lsnp:                 lsnp,
+		skipTxns:             skipTxns,
+		parallelTxn:          parallelTxnChannel,
+		activeIngests:        activeIngests,
+		proceedLSNAfterBatch: *proceedLSNAfterXids == 0,
 	}
-	return totalTxns
+
+	for {
+		pendingSQLFiles := lookForPendingWALFiles(absWalDir, *sortingMethod)
+		if len(pendingSQLFiles) > 0 {
+			replayer.Replay(pendingSQLFiles)
+		} else {
+			log.Info("msg", "No files to replay")
+		}
+
+		<-time.After(WAL_SCAN_INTERVAL)
+	}
 }
 
-func doSerialInsert(conn *pgxpool.Pool, t *txn) error {
-	txn, err := conn.Begin(context.Background())
+func lookForPendingWALFiles(walDir string, sortingMethod string) []string {
+	log.Info("msg", "Scanning for pending WAL files")
+	files, err := os.ReadDir(walDir)
 	if err != nil {
-		return fmt.Errorf("error starting a txn: %w", err)
-	}
-	defer txn.Rollback(context.Background())
-
-	batch := &pgx.Batch{}
-	for _, stmt := range t.stmts {
-		batch.Queue(stmt)
+		log.Fatal("msg", "error reading WAL path", "error", err.Error())
 	}
 
-	r := txn.SendBatch(context.Background(), batch)
-	_, err = r.Exec()
+	sqlFiles := []string{}
+	for _, file := range files {
+		if file.Type().IsRegular() && strings.HasSuffix(file.Name(), ".sql") {
+			sqlFiles = append(sqlFiles, filepath.Join(walDir, file.Name()))
+		}
+	}
+	log.Info("msg", fmt.Sprintf("Found %d files to be replayed", len(sqlFiles)))
+
+	var pendingSQLFiles []string
+	switch sortingMethod {
+	case "change_time":
+		pendingSQLFiles, err = sortFilesByChangeTime(sqlFiles)
+	case "hexadecimal":
+		pendingSQLFiles, err = sortFilesByName(sqlFiles)
+	}
 	if err != nil {
-		return fmt.Errorf("error executing batch results: %w", err)
+		panic(err)
 	}
-	err = r.Close()
-	if err != nil {
-		return fmt.Errorf("error closing rows from batch: %w", err)
-	}
-
-	if err := txn.Commit(context.Background()); err != nil {
-		return fmt.Errorf("error commiting a txn: %w", err)
-	}
-
-	return nil
+	return pendingSQLFiles
 }
 
 func getPgxPool(uri *string, min, max int32) *pgxpool.Pool {
