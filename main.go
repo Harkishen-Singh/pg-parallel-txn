@@ -28,10 +28,12 @@ func main() {
 	level := flag.String("level", "info", "Log level to use from [ 'error', 'warn', 'info', 'debug' ].")
 	numWorkers := flag.Int("num_workers", 20, "Number of parallel workers.")
 	maxConn := flag.Int("max_conn", 20, "Maximum number of connections in the pool.")
-	proceedLSNAfterXids := flag.Int64("proceed_lsn_after", 0, "Proceed LSN marker in Source DB after '-proceed_lsn_after' txns. "+
+	proceedLSNAfterXids := flag.Int64("proceed_lsn_after", PROCEED_AFTER_BATCH, "Proceed LSN marker in Source DB after '-proceed_lsn_after' txns. "+
 		"A higher number causes less interruption in parallelism, but risks more duplicate data in case of a crash. "+
 		"If 0, LSN pointer proceeds after a batch completes. The size of a typical batch is the number of txns in a WAL file.")
 	noProceed := flag.Bool("no_lsn_proceed", false, "Development only. Do not proceed LSN. Source db uri is not needed.")
+	sortingMethod := flag.String("file_sorting_method", "change_time", "Method to use for sorting WAL files to apply in order. "+
+		"Valid: [change_time, hexadecimal]")
 	flag.Parse()
 
 	logCfg := log.Config{
@@ -54,6 +56,7 @@ func main() {
 	pool := getPgxPool(targetUri, 1, int32(*maxConn))
 	defer pool.Close()
 	testConn(pool)
+	log.Info("msg", "connected to target database")
 
 	absWalDir, err := filepath.Abs(*walPath)
 	if err != nil {
@@ -71,11 +74,21 @@ func main() {
 			sqlFiles = append(sqlFiles, filepath.Join(absWalDir, file.Name()))
 		}
 	}
+	if len(sqlFiles) == 0 {
+		log.Info("msg", "No files to replay")
+	}
 
-	pendingSQLFiles, err := sortFilesByChangeTime(sqlFiles)
+	var pendingSQLFiles []string
+	switch *sortingMethod {
+	case "change_time":
+		pendingSQLFiles, err = sortFilesByChangeTime(sqlFiles)
+	case "hexadecimal":
+		pendingSQLFiles, err = sortFilesByName(sqlFiles)
+	}
 	if err != nil {
 		panic(err)
 	}
+	log.Info("msg", fmt.Sprintf("Found %d files to be replayed", len(pendingSQLFiles)))
 
 	var skipTxns atomic.Bool
 	skipTxns.Store(false)
@@ -106,6 +119,8 @@ func main() {
 			log.Fatal("msg", "unable to connect to source database", "err", err.Error())
 		}
 		defer sourceConn.Close(context.Background())
+		testConn(sourceConn)
+		log.Info("msg", "connected to source database")
 		lsnp = NewLSNProceeder(sourceConn, *proceedLSNAfterXids, activeParallelIngest)
 	}
 
@@ -191,13 +206,14 @@ func main() {
 				fmt.Sprintf("found a txn (xid:%d) that stretches beyond current file. Holding its contents till the previous batch completes", commitMetadata.XID))
 		}
 		log.Info("msg", "Waiting for batch to complete")
+		activeParallelIngest.Wait()
 		if *proceedLSNAfterXids == 0 {
 			// Proceed LSN after batch completes is activated.
 			lsnp.Proceed()
 		}
-		activeParallelIngest.Wait()
 		log.Info("Done", time.Since(start).String())
 	}
+	log.Info("msg", "Shutting down")
 }
 
 func performTxn(
@@ -315,7 +331,6 @@ func testConn(conn interface {
 	if err := conn.QueryRow(context.Background(), "SELECT 1").Scan(&t); err != nil {
 		panic(err)
 	}
-	log.Info("msg", "connected to the database")
 	return true
 }
 
