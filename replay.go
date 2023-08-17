@@ -96,7 +96,7 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 				}
 			}
 			if err := scanner.Err(); err != nil {
-				log.Fatal("msg", "error scanning file", "error", err.Error(), "file", filePath)
+				log.Fatal("msg", "Error scanning file", "error", err.Error(), "file", filePath)
 			}
 		}
 		start := time.Now()
@@ -145,7 +145,7 @@ func (r *Replayer) performTxn(
 			"progress", fmt.Sprintf("%d/%d", txnCount, totalTxns))
 		// Now all parallel txns have completed. Let's do the serial txn.
 		if err := r.doSerialInsert(t); err != nil {
-			log.Fatal("msg", "error executing a serial txn", "xid", xid, "err", err.Error())
+			log.Fatal("msg", "Error executing a serial txn", "xid", xid, "err", err.Error())
 		}
 	}
 }

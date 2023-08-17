@@ -39,7 +39,7 @@ func (p *proceedLSN) IncrementTxn(commitLSN string) {
 	p.lastCommitLSN = commitLSN
 	if p.numXidsToProceedAfter != PROCEED_AFTER_BATCH && p.currentXid > p.numXidsToProceedAfter {
 		if err := p.proceed(commitLSN); err != nil {
-			log.Fatal("msg", "could not proceed LSN in Source DB", "err", err.Error())
+			log.Fatal("msg", "Could not proceed LSN in Source DB", "err", err.Error())
 		}
 		p.currentXid = 0
 	}
@@ -48,7 +48,7 @@ func (p *proceedLSN) IncrementTxn(commitLSN string) {
 // Proceed is used when proceed after batch is enabled.
 func (p *proceedLSN) Proceed() {
 	if err := p.proceed(p.lastCommitLSN); err != nil {
-		log.Fatal("msg", "manual proceed: could not proceed LSN in Source DB", "err", err.Error())
+		log.Fatal("msg", "Manual proceed: could not proceed LSN in Source DB", "err", err.Error())
 	}
 }
 

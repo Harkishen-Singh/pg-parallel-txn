@@ -33,7 +33,7 @@ func TestSortFilesByChangeTime(t *testing.T) {
 	// Call the function to sort the files by creation time
 	sortedFiles, err := sortFilesByChangeTime(files)
 	if err != nil {
-		t.Fatalf("sortFilesByChangeTime failed: %v", err)
+		t.Fatalf("SortFilesByChangeTime failed: %v", err)
 	}
 
 	// Verify the sorted order

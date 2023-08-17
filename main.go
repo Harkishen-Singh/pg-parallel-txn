@@ -44,7 +44,7 @@ func main() {
 	}
 
 	if *targetUri == "" {
-		log.Fatal("msg", "please provide database URIs for '-target_uri' flags")
+		log.Fatal("msg", "Please provide database URIs for '-target_uri' flags")
 	}
 
 	// state, err := LoadOrCreateState()
@@ -83,7 +83,7 @@ func main() {
 	if !*noProceed {
 		sourceConn, err := pgx.Connect(context.Background(), *sourceUri)
 		if err != nil {
-			log.Fatal("msg", "unable to connect to source database", "err", err.Error())
+			log.Fatal("msg", "Unable to connect to source database", "err", err.Error())
 		}
 		defer sourceConn.Close(context.Background())
 		testConn(sourceConn)
@@ -121,7 +121,7 @@ func lookForPendingWALFiles(walDir string, sortingMethod string) []string {
 	log.Info("msg", "Scanning for pending WAL files")
 	files, err := os.ReadDir(walDir)
 	if err != nil {
-		log.Fatal("msg", "error reading WAL path", "error", err.Error())
+		log.Fatal("msg", "Error reading WAL path", "error", err.Error())
 	}
 
 	sqlFiles := []string{}
