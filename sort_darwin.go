@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func sortFilesByCreationTime(files []string) ([]string, error) {
+func sortFilesByChangeTime(files []string) ([]string, error) {
 	type fileWithTime struct {
 		name string
 		time time.Time

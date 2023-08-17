@@ -72,7 +72,7 @@ func main() {
 		}
 	}
 
-	pendingSQLFiles, err := sortFilesByCreationTime(sqlFiles)
+	pendingSQLFiles, err := sortFilesByChangeTime(sqlFiles)
 	if err != nil {
 		panic(err)
 	}
