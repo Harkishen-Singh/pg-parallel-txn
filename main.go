@@ -148,13 +148,9 @@ func main() {
 							totalTxns,
 						)
 					}
-
-				// Ignore statements.
-				case line[:12] == "-- KEEPALIVE":
+				case line[:3] == "-- ":
+					// Ignore all comments.
 					continue
-				case line[:13] == "-- SWITCH WAL":
-					continue
-
 				default:
 					stmts = append(stmts, line)
 				}
