@@ -128,12 +128,12 @@ func main() {
 	isTxnOpen := false // Helps to capture commits that are spread over multiple files.
 	beginMetadata := BeginMetadata{}
 	commitMetadata := CommitMetadata{}
-	for _, filePath := range pendingSQLFiles {
+	for fileCount, filePath := range pendingSQLFiles {
 		totalTxns := getTotalTxns(filePath)
 		txnCount := int64(0)
 
 		replayFile := func(filePath string) {
-			log.Info("Replaying", getFileName(filePath), "total_txns", totalTxns)
+			log.Info("Replaying", getFileName(filePath), "total_txns", totalTxns, "progress", fmt.Sprintf("%d/%d", fileCount, len(pendingSQLFiles)))
 
 			file, err := os.Open(filePath)
 			if err != nil {
