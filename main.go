@@ -117,7 +117,7 @@ func main() {
 		txnCount := int64(0)
 
 		replayFile := func(filePath string) {
-			log.Info("Replaying", getFileName(filePath), "total_txns", txnCount)
+			log.Info("Replaying", getFileName(filePath), "total_txns", totalTxns)
 
 			file, err := os.Open(filePath)
 			if err != nil {
