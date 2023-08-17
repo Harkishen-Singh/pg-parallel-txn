@@ -152,9 +152,10 @@ func main() {
 						// When commits are spread over files, the Begin_txn_id is in a different file than
 						// Commit_txn_id. Hence, the xid of Begin & Commit txn_id must be same.
 						panic(fmt.Sprintf(
-							"FATAL: Falty txn constructed. Begin.XID (%s) does not match Commit.XID (%s)",
-							beginMetadata.CommitLSN,
-							commitMetadata.LSN,
+							"FATAL: Falty txn constructed. Begin.XID (%d) does not match Commit.XID (%d). File: %s",
+							beginMetadata.XID,
+							commitMetadata.XID,
+							getFileName(filePath),
 						))
 					}
 
