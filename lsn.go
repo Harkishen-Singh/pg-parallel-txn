@@ -53,6 +53,10 @@ func (p *proceedLSN) Proceed() {
 }
 
 func (p *proceedLSN) proceed(newLSN string) error {
+	if newLSN == "" {
+		// This happens when the WAL file does not have any COMMIT; statement.
+		return nil
+	}
 	log.Info("msg", "Proceeding LSN. Waiting for parallel txns to complete")
 	p.parallelIngest.Wait()
 	log.Info("msg", "Proceeding LSN", "LSN", p.lastCommitLSN)
