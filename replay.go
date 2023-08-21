@@ -20,14 +20,20 @@ type Replayer struct {
 	skipTxns             *atomic.Bool
 	parallelTxn          chan<- *txn
 	activeIngests        *sync.WaitGroup
+	state                *state
 	proceedLSNAfterBatch bool
+	activeTxn            txnMetadata
+}
+
+// txnMetadata stores the statements of a txn.
+type txnMetadata struct {
+	stmts         []string
+	beginMetadata BeginMetadata
+	isTxnOpen     bool
 }
 
 // Replay all the SQL files in order against the target and proceed the LSN in source database.
 func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
-	stmts := []string{}
-	isTxnOpen := false // Helps to capture commits that are spread over multiple files.
-	beginMetadata := BeginMetadata{}
 	commitMetadata := CommitMetadata{}
 	for fileCount, filePath := range pendingSQLFilesInOrder {
 		totalTxns := getTotalTxns(filePath)
@@ -52,26 +58,35 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 				line := scanner.Text()
 				switch {
 				case line[:6] == "BEGIN;":
-					beginMetadata = GetBeginMetadata(line)
-					if isTxnOpen {
+					if len(r.activeTxn.stmts) > 0 {
 						panic(fmt.Sprintf(
 							"Faulty txn: Cannot start a new txn when a txn is already open. Something is wrong; I should crash. File=>%s xid=>%d lsn=>%s",
 							getFileName(filePath),
-							beginMetadata.XID,
-							beginMetadata.LSN,
+							r.activeTxn.beginMetadata.XID,
+							r.activeTxn.beginMetadata.LSN,
 						))
 					}
-					stmts = []string{}
-					isTxnOpen = true
+					r.activeTxn.beginMetadata = GetBeginMetadata(line)
+					r.activeTxn.stmts = []string{}
+					r.activeTxn.isTxnOpen = true
 				case line[:7] == "COMMIT;":
 					if r.skipTxns.Load() {
 						log.Debug("msg", "skipping txns")
 						break stop_scanning
 					}
-					isTxnOpen = false
+
+					refresh := func() {
+						r.activeTxn.stmts = []string{}
+						r.activeTxn.isTxnOpen = false
+					}
 
 					commitMetadata = GetCommitMetadata(line)
-					if beginMetadata.XID != commitMetadata.XID {
+					if !r.activeTxn.isTxnOpen {
+						log.Warn("msg", "Received COMMIT; when BEGIN was not called. Skipping this txn", "commit.xid", commitMetadata.XID, "commit.lsn", commitMetadata.LSN)
+						refresh()
+						continue
+					}
+					if r.activeTxn.beginMetadata.XID != commitMetadata.XID {
 						// This serves as an important check for txns that are spread over multiple files.
 						// Though we read the WAL files in order in which they are created, we need a
 						// reliable way to check if the txn we constructed has correct contents or not.
@@ -80,27 +95,28 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 						// Commit_txn_id. Hence, the xid of Begin & Commit txn_id must be same.
 						panic(fmt.Sprintf(
 							"FATAL: Faulty txn constructed. Begin.XID (%d) does not match Commit.XID (%d). File: %s",
-							beginMetadata.XID,
+							r.activeTxn.beginMetadata.XID,
 							commitMetadata.XID,
 							getFileName(filePath),
 						))
 					}
 
 					txnCount++
-					if len(stmts) > 0 {
+					if len(r.activeTxn.stmts) > 0 {
 						r.performTxn(
 							commitMetadata.XID,
-							stmts,
+							r.activeTxn.stmts,
 							txnCount,
 							totalTxns,
 						)
 					}
 					r.lsnp.IncrementTxn(commitMetadata.LSN)
+					refresh()
 				case line[:3] == "-- ":
 					// Ignore all comments.
 					continue
 				default:
-					stmts = append(stmts, line)
+					r.activeTxn.stmts = append(r.activeTxn.stmts, line)
 				}
 			}
 			if err := scanner.Err(); err != nil {
@@ -108,9 +124,13 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 			}
 		}
 		start := time.Now()
+		r.state.UpdateCurrent(getFileName(filePath))
+		if err := r.state.Write(); err != nil {
+			log.Fatal("msg", "Error writing state file", "err", err.Error())
+		}
 		replayFile(filePath)
 		// Let's wait for previous batch to complete before moving to the next batch.
-		if isTxnOpen {
+		if len(r.activeTxn.stmts) > 0 {
 			log.Debug("msg",
 				fmt.Sprintf("found a txn (xid:%d) that stretches beyond current file. Holding its contents till the previous batch completes", commitMetadata.XID))
 		}
@@ -120,8 +140,14 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 			// Proceed LSN after batch completes is activated.
 			r.lsnp.Proceed()
 		}
+		r.state.MarkCurrentAsComplete()
+		if err := r.state.Write(); err != nil {
+			log.Fatal("msg", "Error writing state file", "err", err.Error())
+		}
+		log.Info("msg", "Proceeding state...")
 		log.Info("Done", time.Since(start).String())
 	}
+	log.Info("msg", "Replaying of SQL files batch completed", "num_files_replayed", len(pendingSQLFilesInOrder))
 }
 
 func (r *Replayer) performTxn(

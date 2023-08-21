@@ -31,7 +31,7 @@ func main() {
 		"A higher number causes less interruption in parallelism, but risks more duplicate data in case of a crash. "+
 		"If 0, LSN pointer proceeds after a batch completes. The size of a typical batch is the number of txns in a WAL file.")
 	noProceed := flag.Bool("no_lsn_proceed", false, "Development only. Do not proceed LSN. Source db uri is not needed.")
-	sortingMethod := flag.String("file_sorting_method", "change_time", "Method to use for sorting WAL files to apply in order. "+
+	sortingMethod := flag.String("file_sorting_method", "hexadecimal", "Method to use for sorting WAL files to apply in order. "+
 		"Valid: [change_time, hexadecimal]")
 	flag.Parse()
 
@@ -47,10 +47,10 @@ func main() {
 		log.Fatal("msg", "Please provide database URIs for '-target_uri' flags")
 	}
 
-	// state, err := LoadOrCreateState()
-	// if err != nil {
-	// 	log.Fatal("msg", "error loading state file", "error", err.Error())
-	// }
+	state, err := LoadOrCreateState()
+	if err != nil {
+		log.Fatal("msg", "Error loading state file", "error", err.Error())
+	}
 
 	pool := getPgxPool(targetUri, 1, int32(*maxConn))
 	defer pool.Close()
@@ -99,6 +99,7 @@ func main() {
 	replayer := Replayer{
 		pool:                 pool,
 		lsnp:                 lsnp,
+		state:                state,
 		skipTxns:             skipTxns,
 		parallelTxn:          parallelTxnChannel,
 		activeIngests:        activeIngests,
@@ -106,7 +107,7 @@ func main() {
 	}
 
 	for {
-		pendingSQLFiles := lookForPendingWALFiles(absWalDir, *sortingMethod)
+		pendingSQLFiles := lookForPendingWALFiles(absWalDir, *sortingMethod, state)
 		if len(pendingSQLFiles) > 0 {
 			replayer.Replay(pendingSQLFiles)
 		} else {
@@ -117,16 +118,18 @@ func main() {
 	}
 }
 
-func lookForPendingWALFiles(walDir string, sortingMethod string) []string {
+func lookForPendingWALFiles(walDir string, sortingMethod string, state *state) []string {
 	log.Info("msg", "Scanning for pending WAL files")
 	files, err := os.ReadDir(walDir)
 	if err != nil {
 		log.Fatal("msg", "Error reading WAL path", "error", err.Error())
 	}
 
+	completedFiles := arrayToMap(state.CompletedFiles)
 	sqlFiles := []string{}
 	for _, file := range files {
-		if file.Type().IsRegular() && strings.HasSuffix(file.Name(), ".sql") {
+		_, processedPreviously := completedFiles[getFileName(file.Name())]
+		if file.Type().IsRegular() && strings.HasSuffix(file.Name(), ".sql") && !processedPreviously {
 			sqlFiles = append(sqlFiles, filepath.Join(walDir, file.Name()))
 		}
 	}
@@ -171,4 +174,12 @@ func testConn(conn interface {
 
 func getFileName(path string) string {
 	return filepath.Base(path)
+}
+
+func arrayToMap[T string](array []T) map[T]struct{} {
+	m := make(map[T]struct{}, len(array))
+	for _, t := range array {
+		m[t] = struct{}{}
+	}
+	return m
 }
