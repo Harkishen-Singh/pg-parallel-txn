@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/jackc/pgx/v5"
@@ -43,34 +44,40 @@ func (w *worker) Run() {
 			return
 		}
 		w.activeParallelIngest.Add(1)
-		perform := func() {
-			txn, err := w.conn.Begin(context.Background())
-			if err != nil {
-				log.Error("msg", "error starting a txn", "error", err.Error())
-				return
-			}
-			defer txn.Rollback(context.Background())
-
-			batch := &pgx.Batch{}
-			for _, stmt := range stmts.stmts {
-				batch.Queue(stmt)
-			}
-
-			r := txn.SendBatch(context.Background(), batch)
-			if _, err := r.Exec(); err != nil {
-				log.Error("msg", "error querying batch results", "error", err.Error())
-				return
-			}
-			if err = r.Close(); err != nil {
-				log.Error("msg", "error closing rows from batch", "error", err.Error())
-				return
-			}
-
-			if err := txn.Commit(context.Background()); err != nil {
-				panic(err)
-			}
+		if err := doBatch(w.conn, stmts); err != nil {
+			log.Fatal("msg", "error doBatch", "err", err.Error())
 		}
-		perform()
 		w.activeParallelIngest.Done()
 	}
+}
+
+var not_allowed_schemas = []string{"_timescaledb_catalog"}
+
+func doBatch(conn *pgxpool.Pool, stmts *txn) error {
+	txn, err := conn.Begin(context.Background())
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer txn.Rollback(context.Background())
+
+	batch := &pgx.Batch{}
+	for _, stmt := range stmts.stmts {
+		if strings.Contains(stmt, not_allowed_schemas[0]) {
+			log.Info("msg", "Skipping txn since it contained not permitted statements")
+		}
+		batch.Queue(stmt)
+	}
+
+	r := txn.SendBatch(context.Background(), batch)
+	if _, err := r.Exec(); err != nil {
+		return fmt.Errorf("exec: %w", err)
+	}
+	if err = r.Close(); err != nil {
+		return fmt.Errorf("close: %w", err)
+	}
+
+	if err := txn.Commit(context.Background()); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
 }

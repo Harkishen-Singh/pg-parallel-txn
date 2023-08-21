@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"os"
 	"sync"
@@ -10,7 +9,6 @@ import (
 	"time"
 
 	"github.com/Harkishen-Singh/pg-parallel-txn/transform"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/timescale/promscale/pkg/log"
 )
@@ -190,31 +188,9 @@ func (r *Replayer) performTxn(
 }
 
 func (r *Replayer) doSerialInsert(t *txn) error {
-	txn, err := r.pool.Begin(context.Background())
-	if err != nil {
-		return fmt.Errorf("error starting a txn: %w", err)
+	if err := doBatch(r.pool, t); err != nil {
+		return fmt.Errorf("doBatch: %w", err)
 	}
-	defer txn.Rollback(context.Background())
-
-	batch := &pgx.Batch{}
-	for _, stmt := range t.stmts {
-		batch.Queue(stmt)
-	}
-
-	result := txn.SendBatch(context.Background(), batch)
-	_, err = result.Exec()
-	if err != nil {
-		return fmt.Errorf("error executing batch results: %w", err)
-	}
-	err = result.Close()
-	if err != nil {
-		return fmt.Errorf("error closing rows from batch: %w", err)
-	}
-
-	if err := txn.Commit(context.Background()); err != nil {
-		return fmt.Errorf("error commiting a txn: %w", err)
-	}
-
 	return nil
 }
 
