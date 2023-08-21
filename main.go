@@ -20,7 +20,7 @@ import (
 	"github.com/Harkishen-Singh/pg-parallel-txn/transform"
 )
 
-const WAL_SCAN_INTERVAL = time.Minute
+const WAL_SCAN_INTERVAL = 10 * time.Second
 
 func main() {
 	sourceUri := flag.String("source_uri", "", "Source database URI to update LSN pointer.")
