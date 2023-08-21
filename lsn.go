@@ -45,7 +45,7 @@ func (p *proceedLSN) IncrementTxn(commitLSN string) {
 	}
 }
 
-// Proceed is used when proceed after batch is enabled.
+// Proceed is used when "proceed after batch" is enabled.
 func (p *proceedLSN) Proceed() {
 	if err := p.proceed(p.lastCommitLSN); err != nil {
 		log.Fatal("msg", "Manual proceed: could not proceed LSN in Source DB", "err", err.Error())

@@ -82,7 +82,10 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 
 					commitMetadata = GetCommitMetadata(line)
 					if !r.activeTxn.isTxnOpen {
-						log.Warn("msg", "Received COMMIT; when BEGIN was not called. Skipping this txn", "commit.xid", commitMetadata.XID, "commit.lsn", commitMetadata.LSN)
+						log.Warn(
+							"msg", "Incomplete txn: Received COMMIT; when BEGIN; was not received. Skipping this txn",
+							"commit.xid", commitMetadata.XID,
+							"commit.lsn", commitMetadata.LSN)
 						refresh()
 						continue
 					}
