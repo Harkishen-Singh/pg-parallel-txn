@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -119,6 +120,9 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 					// Ignore all comments.
 					continue
 				default:
+					if strings.Contains(line, "_timescaledb_catalog") {
+						continue
+					}
 					r.activeTxn.stmts = append(r.activeTxn.stmts, line)
 				}
 			}

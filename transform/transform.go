@@ -61,21 +61,22 @@ func Format(file string) (formattedFileName string) {
 		os.Remove(file)
 	}
 
-	content, err := os.ReadFile(file)
+	bSlice, err := os.ReadFile(file)
 	if err != nil {
 		log.Fatal("msg", "Failed to read the file", "file", file, "err", err.Error())
 	}
+	content := string(bSlice)
 	chunkToHypertable.Range(func(key, value any) bool {
 		re := key.(*regexp.Regexp)
 		qualified_name := value.(string)
-		formattedContent := re.ReplaceAllString(string(content), qualified_name)
-		err = os.WriteFile(formattedFileName, []byte(formattedContent), 0644)
-		if err != nil {
-			log.Fatal("msg", "Failed to write the updated content to the file", "file", file, "err", err.Error())
-		}
-		log.Debug("msg", fmt.Sprintf("transformed file %s", file))
+		content = re.ReplaceAllString(string(content), qualified_name)
 		return true
 	})
+	err = os.WriteFile(formattedFileName, []byte(content), 0644)
+	if err != nil {
+		log.Fatal("msg", "Failed to write the updated content to the file", "file", file, "err", err.Error())
+	}
+	log.Debug("msg", fmt.Sprintf("transformed file %s", file))
 	log.Debug("msg", "formatting complete")
 	log.Info("formatting_time", time.Since(start).String())
 	return
