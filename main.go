@@ -115,9 +115,9 @@ func main() {
 			replayer.Replay(pendingSQLFiles)
 		} else {
 			log.Info("msg", "No files to replay")
+			// Wait for scan interval before next scan.
+			<-time.After(WAL_SCAN_INTERVAL)
 		}
-
-		<-time.After(WAL_SCAN_INTERVAL)
 	}
 }
 
