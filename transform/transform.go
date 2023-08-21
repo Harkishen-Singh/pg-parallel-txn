@@ -18,6 +18,10 @@ const Extension = ".replayable"
 var chunkToHypertable = sync.Map{}
 
 func add(chunkRegex *regexp.Regexp, hypertableWithSchema string) {
+	log.Info(
+		"msg", "Adding following regex matching",
+		"chunk_regex", chunkRegex.String(),
+		"hypertable", hypertableWithSchema)
 	chunkToHypertable.Store(chunkRegex, hypertableWithSchema)
 }
 
