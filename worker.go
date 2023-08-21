@@ -63,7 +63,7 @@ func doBatch(conn *pgxpool.Pool, stmts *txn) error {
 	batch := &pgx.Batch{}
 	for _, stmt := range stmts.stmts {
 		if strings.Contains(stmt, not_allowed_schemas[0]) {
-			log.Info("msg", "Skipping txn since it contained not permitted statements")
+			log.Warn("msg", "Skipping txn since it contained not permitted statements")
 		}
 		batch.Queue(stmt)
 	}

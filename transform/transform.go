@@ -34,7 +34,7 @@ func CompleteMapping(conn *pgx.Conn) error {
 		if err := r.Scan(&id, &schemaName, &tableName); err != nil {
 			return fmt.Errorf("error scanning results: %w", err)
 		}
-		re, err := regexp.Compile(fmt.Sprintf(`"_timescaledb_internal"\."\_hyper_%d_\d+_chunk"`, id))
+		re, err := regexp.Compile(fmt.Sprintf(`"_timescaledb_internal"."_hyper_%d_\d+_chunk"`, id))
 		if err != nil {
 			return fmt.Errorf("error compiling regex: %w", err)
 		}
