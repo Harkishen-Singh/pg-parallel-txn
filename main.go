@@ -16,6 +16,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/timescale/promscale/pkg/log"
+
+	"github.com/Harkishen-Singh/pg-parallel-txn/transform"
 )
 
 const WAL_SCAN_INTERVAL = time.Minute
@@ -89,6 +91,7 @@ func main() {
 		testConn(sourceConn)
 		log.Info("msg", "Connected to source database")
 		lsnp = NewLSNProceeder(sourceConn, *proceedLSNAfterXids, activeIngests)
+		transform.CompleteMapping(sourceConn)
 	}
 
 	absWalDir, err := filepath.Abs(*walPath)

@@ -2,3 +2,4 @@ bin/*
 ignored/*
 pg-parallel-txn
 *.json
+*.env

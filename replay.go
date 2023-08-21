@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Harkishen-Singh/pg-parallel-txn/transform"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/timescale/promscale/pkg/log"
@@ -35,11 +36,12 @@ type txnMetadata struct {
 // Replay all the SQL files in order against the target and proceed the LSN in source database.
 func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 	commitMetadata := CommitMetadata{}
-	for fileCount, filePath := range pendingSQLFilesInOrder {
-		totalTxns := getTotalTxns(filePath)
+	for fileCount, pendingFile := range pendingSQLFilesInOrder {
+		totalTxns := getTotalTxns(pendingFile)
 		txnCount := int64(0)
 
 		replayFile := func(filePath string) {
+			filePath = transform.Format(filePath)
 			log.Info(
 				"Replaying", getFileName(filePath),
 				"total_txns", totalTxns,
@@ -127,11 +129,11 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 			}
 		}
 		start := time.Now()
-		r.state.UpdateCurrent(getFileName(filePath))
+		r.state.UpdateCurrent(getFileName(pendingFile))
 		if err := r.state.Write(); err != nil {
 			log.Fatal("msg", "Error writing state file", "err", err.Error())
 		}
-		replayFile(filePath)
+		replayFile(pendingFile)
 		// Let's wait for previous batch to complete before moving to the next batch.
 		if len(r.activeTxn.stmts) > 0 {
 			log.Debug("msg",
