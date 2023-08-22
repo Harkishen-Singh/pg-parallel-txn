@@ -38,7 +38,7 @@ func main() {
 	noProceed := flag.Bool("no_lsn_proceed", false, "Development only. Do not proceed LSN. Source db uri is not needed.")
 	sortingMethod := flag.String("file_sorting_method", "hexadecimal", "Method to use for sorting WAL files to apply in order. "+
 		"Valid: [change_time, hexadecimal]")
-	runTransformRoutine := flag.Bool("run_transform_routine", true, "Runs 'pgcopydb stream transform' to convert .json WAL files "+
+	runTransform := flag.Bool("run_json_to_sql_transform", true, "Runs 'pgcopydb stream transform' to convert .json WAL files "+
 		"to .sql files")
 	flag.Parse()
 
@@ -71,14 +71,6 @@ func main() {
 	for i := 0; i < *numWorkers; i++ {
 		w := NewWorker(i, pool, parallelTxnChannel, activeIngests)
 		go w.Run()
-	}
-
-	rootCtx, rootCancel := context.WithCancel(context.Background())
-	defer rootCancel()
-	if *runTransformRoutine {
-		transformCtx, transformCancel := context.WithCancel(rootCtx)
-		defer transformCancel()
-		go transform.RunTransformRoutine(transformCtx, *walPath)
 	}
 
 	sigChan := make(chan os.Signal, 1)
@@ -123,6 +115,9 @@ func main() {
 	}
 
 	for {
+		if *runTransform {
+			transform.RunTransformRoutine(context.Background(), absWalDir)
+		}
 		pendingSQLFiles := lookForPendingWALFiles(absWalDir, *sortingMethod, state)
 		if len(pendingSQLFiles) > 0 {
 			replayer.Replay(pendingSQLFiles)
