@@ -20,7 +20,6 @@ import (
 	"github.com/Harkishen-Singh/pg-parallel-txn/common"
 	"github.com/Harkishen-Singh/pg-parallel-txn/format"
 	"github.com/Harkishen-Singh/pg-parallel-txn/sort"
-	"github.com/Harkishen-Singh/pg-parallel-txn/transform"
 )
 
 const WAL_SCAN_INTERVAL = 10 * time.Second
@@ -38,8 +37,6 @@ func main() {
 	noProceed := flag.Bool("no_lsn_proceed", false, "Development only. Do not proceed LSN. Source db uri is not needed.")
 	sortingMethod := flag.String("file_sorting_method", "hexadecimal", "Method to use for sorting WAL files to apply in order. "+
 		"Valid: [change_time, hexadecimal]")
-	runTransformRoutine := flag.Bool("run_transform_routine", true, "Runs 'pgcopydb stream transform' to convert .json WAL files "+
-		"to .sql files")
 	flag.Parse()
 
 	logCfg := log.Config{
@@ -71,14 +68,6 @@ func main() {
 	for i := 0; i < *numWorkers; i++ {
 		w := NewWorker(i, pool, parallelTxnChannel, activeIngests)
 		go w.Run()
-	}
-
-	rootCtx, rootCancel := context.WithCancel(context.Background())
-	defer rootCancel()
-	if *runTransformRoutine {
-		transformCtx, transformCancel := context.WithCancel(rootCtx)
-		defer transformCancel()
-		go transform.RunTransformRoutine(transformCtx, *walPath)
 	}
 
 	sigChan := make(chan os.Signal, 1)
