@@ -1,17 +1,17 @@
-//go:build linux
-// +build linux
+//go:build darwin
+// +build darwin
 
-package main
+package sort
 
 import (
 	"fmt"
 	"os"
-	"sort"
+	st "sort"
 	"syscall"
 	"time"
 )
 
-func sortFilesByChangeTime(files []string) ([]string, error) {
+func SortFilesByChangeTime(files []string) ([]string, error) {
 	type fileWithTime struct {
 		name string
 		time time.Time
@@ -30,12 +30,12 @@ func sortFilesByChangeTime(files []string) ([]string, error) {
 			return nil, fmt.Errorf("failed to cast to syscall.Stat_t")
 		}
 
-		changeTime := time.Unix(int64(statT.Ctim.Sec), int64(statT.Ctim.Nsec))
+		changeTime := time.Unix(int64(statT.Ctimespec.Sec), int64(statT.Ctimespec.Nsec))
 
 		fileTimes[i] = fileWithTime{name: file, time: changeTime}
 	}
 
-	sort.Slice(fileTimes, func(i, j int) bool {
+	st.Slice(fileTimes, func(i, j int) bool {
 		return fileTimes[i].time.Before(fileTimes[j].time)
 	})
 

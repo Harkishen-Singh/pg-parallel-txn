@@ -4,80 +4,105 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"regexp"
-	"sync"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/Harkishen-Singh/pg-parallel-txn/common"
+	"github.com/Harkishen-Singh/pg-parallel-txn/sort"
 	"github.com/timescale/promscale/pkg/log"
 )
 
-const hypertable_with_id = "SELECT id::BIGINT, schema_name::TEXT, table_name::TEXT FROM _timescaledb_catalog.hypertable ORDER BY 1"
-const Extension = ".replayable"
+const transformedFileExtension = ".sql"
+const checkInterval = 5 * time.Second
 
-var chunkToHypertable = sync.Map{}
-
-func add(chunkRegex *regexp.Regexp, hypertableWithSchema string) {
-	log.Info(
-		"msg", "Adding following regex matching",
-		"chunk_regex", chunkRegex.String(),
-		"hypertable", hypertableWithSchema)
-	chunkToHypertable.Store(chunkRegex, hypertableWithSchema)
-}
-
-func CompleteMapping(conn *pgx.Conn) error {
-	r, err := conn.Query(context.Background(), hypertable_with_id)
-	if err != nil {
-		return fmt.Errorf("error querying hypertable info: %w", err)
-	}
-	defer r.Close()
-	for r.Next() {
-		id := int64(0)
-		schemaName := ""
-		tableName := ""
-		if err := r.Scan(&id, &schemaName, &tableName); err != nil {
-			return fmt.Errorf("error scanning results: %w", err)
+func RunTransformRoutine(ctx context.Context, absWalDir string) {
+	log.Info("msg", "Starting transform_routine")
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info("msg", "Stopping transform_routine")
+			return
+		default:
 		}
-		re, err := regexp.Compile(fmt.Sprintf(`"_timescaledb_internal"."_hyper_%d_\d+_chunk"`, id))
+		files, err := os.ReadDir(absWalDir)
 		if err != nil {
-			return fmt.Errorf("error compiling regex: %w", err)
+			log.Fatal("msg", "Error reading WAL path", "error", err.Error())
 		}
-		add(re, fmt.Sprintf(`"%s"."%s"`, schemaName, tableName))
+
+		pending := []string{}
+		for _, file := range files {
+			if file.Type().IsRegular() && strings.HasSuffix(file.Name(), ".json") {
+				fileNameOnly := common.FileNameWithoutExtension(common.GetFileName(file.Name())) // wal_file_name_in_hexadecimal.json
+				transformedFileName := fileNameOnly + transformedFileExtension
+				exists, err := doesTransformedFileExist(transformedFileName)
+				if err != nil {
+					log.Error(
+						"[transform_routine]", "error scanning transformed file",
+						"file", transformedFileName,
+						"err", err.Error())
+					continue
+				}
+				if !exists {
+					pending = append(pending, fileNameOnly)
+				}
+			}
+		}
+
+		if len(pending) == 0 {
+			log.Debug("[transform_routine]", "no files found to scan")
+			select {
+			case <-time.After(checkInterval):
+			case <-ctx.Done():
+			}
+			continue
+		}
+		log.Info("[transform_routine]", "found files to scan", "count", len(pending))
+		// Sort the files by their hexadecimal names.
+		pending = sort.SortFilesByName(pending)
+		path := filepath.Dir(absWalDir)
+		for _, f := range pending {
+			transform(path, f)
+		}
 	}
-	log.Info("msg", "Completed mapping of chunks to hypertable")
-	return nil
 }
 
-// Format formats the file.
-// The formatting includes converting all _timescaledb_internal._hyper_{}_{}_chunk to <schema_name>.<table_name>
-// After formatting completes, the file name is changed to file_name + Extension where the extension is .formatted
-// Formatted files are never reformatted.
-func Format(file string) (formattedFileName string) {
-	log.Debug("msg", "formatting", "file", file)
-	start := time.Now()
-	formattedFileName = file + Extension
-	_, err := os.Stat(formattedFileName)
-	if os.IsExist(err) {
-		os.Remove(file)
+func transform(path, fileName string) {
+	command := fmt.Sprintf(
+		"pgcopydb stream transform %s/%s.json %s/%s.sql",
+		path, fileName,
+		path, fileName,
+	)
+	log.Debug("[transform_routine]", "transforming", "command", command)
+	cmd := exec.Command(command)
+
+	// start the command in a separate process
+	err := cmd.Start()
+	if err != nil {
+		log.Error("[transform_routine]", "error in cmd.Start", "err", err.Error())
+		return
 	}
 
-	bSlice, err := os.ReadFile(file)
+	// wait for the command to finish
+	err = cmd.Wait()
 	if err != nil {
-		log.Fatal("msg", "Failed to read the file", "file", file, "err", err.Error())
+		log.Error("[transform_routine]", "error in cmd.Wait", "err", err.Error())
+		return
 	}
-	content := string(bSlice)
-	chunkToHypertable.Range(func(key, value any) bool {
-		re := key.(*regexp.Regexp)
-		qualified_name := value.(string)
-		content = re.ReplaceAllString(string(content), qualified_name)
-		return true
-	})
-	err = os.WriteFile(formattedFileName, []byte(content), 0644)
-	if err != nil {
-		log.Fatal("msg", "Failed to write the updated content to the file", "file", file, "err", err.Error())
+
+	if cmd.ProcessState.ExitCode() != 0 {
+		log.Error("[transform_routine]", "transformed exited with non-zero code", "code", cmd.ProcessState.ExitCode())
 	}
-	log.Debug("msg", fmt.Sprintf("transformed file %s", file))
-	log.Debug("msg", "formatting complete")
-	log.Info("formatting_time", time.Since(start).String())
-	return
+}
+
+func doesTransformedFileExist(f string) (bool, error) {
+	_, err := os.Stat(f)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("error when searching for file: %w", err)
 }

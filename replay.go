@@ -9,7 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Harkishen-Singh/pg-parallel-txn/transform"
+	"github.com/Harkishen-Singh/pg-parallel-txn/common"
+	"github.com/Harkishen-Singh/pg-parallel-txn/format"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/timescale/promscale/pkg/log"
 )
@@ -40,9 +41,9 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 		txnCount := int64(0)
 
 		replayFile := func(filePath string) {
-			filePath = transform.Format(filePath)
+			filePath = format.Format(filePath)
 			log.Info(
-				"Replaying", getFileName(filePath),
+				"Replaying", common.GetFileName(filePath),
 				"total_txns", totalTxns,
 				"progress", fmt.Sprintf("%d/%d", fileCount, len(pendingSQLFilesInOrder)))
 
@@ -62,7 +63,7 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 					if len(r.activeTxn.stmts) > 0 {
 						panic(fmt.Sprintf(
 							"Faulty txn: Cannot start a new txn when a txn is already open. Something is wrong; I should crash. File=>%s xid=>%d lsn=>%s",
-							getFileName(filePath),
+							common.GetFileName(filePath),
 							r.activeTxn.beginMetadata.XID,
 							r.activeTxn.beginMetadata.LSN,
 						))
@@ -101,7 +102,7 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 							"FATAL: Faulty txn constructed. Begin.XID (%d) does not match Commit.XID (%d). File: %s",
 							r.activeTxn.beginMetadata.XID,
 							commitMetadata.XID,
-							getFileName(filePath),
+							common.GetFileName(filePath),
 						))
 					}
 
@@ -131,7 +132,7 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 			}
 		}
 		start := time.Now()
-		r.state.UpdateCurrent(getFileName(pendingFile))
+		r.state.UpdateCurrent(common.GetFileName(pendingFile))
 		if err := r.state.Write(); err != nil {
 			log.Fatal("msg", "Error writing state file", "err", err.Error())
 		}

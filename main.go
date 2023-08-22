@@ -17,6 +17,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/timescale/promscale/pkg/log"
 
+	"github.com/Harkishen-Singh/pg-parallel-txn/common"
+	"github.com/Harkishen-Singh/pg-parallel-txn/format"
+	"github.com/Harkishen-Singh/pg-parallel-txn/sort"
 	"github.com/Harkishen-Singh/pg-parallel-txn/transform"
 )
 
@@ -35,6 +38,8 @@ func main() {
 	noProceed := flag.Bool("no_lsn_proceed", false, "Development only. Do not proceed LSN. Source db uri is not needed.")
 	sortingMethod := flag.String("file_sorting_method", "hexadecimal", "Method to use for sorting WAL files to apply in order. "+
 		"Valid: [change_time, hexadecimal]")
+	runTransformRoutine := flag.Bool("run_transform_routine", true, "Runs 'pgcopydb stream transform' to convert .json WAL files "+
+		"to .sql files")
 	flag.Parse()
 
 	logCfg := log.Config{
@@ -68,6 +73,14 @@ func main() {
 		go w.Run()
 	}
 
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+	if *runTransformRoutine {
+		transformCtx, transformCancel := context.WithCancel(rootCtx)
+		defer transformCancel()
+		go transform.RunTransformRoutine(transformCtx, *walPath)
+	}
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT)
 	go func() {
@@ -91,7 +104,7 @@ func main() {
 		testConn(sourceConn)
 		log.Info("msg", "Connected to source database")
 		lsnp = NewLSNProceeder(sourceConn, *proceedLSNAfterXids, activeIngests)
-		transform.CompleteMapping(sourceConn)
+		format.CompleteMapping(sourceConn)
 	}
 
 	absWalDir, err := filepath.Abs(*walPath)
@@ -128,10 +141,10 @@ func lookForPendingWALFiles(walDir string, sortingMethod string, state *state) [
 		log.Fatal("msg", "Error reading WAL path", "error", err.Error())
 	}
 
-	completedFiles := arrayToMap(state.CompletedFiles)
+	completedFiles := common.ArrayToMap(state.CompletedFiles)
 	sqlFiles := []string{}
 	for _, file := range files {
-		_, processedPreviously := completedFiles[getFileName(file.Name())]
+		_, processedPreviously := completedFiles[common.GetFileName(file.Name())]
 		if file.Type().IsRegular() && strings.HasSuffix(file.Name(), ".sql") && !processedPreviously {
 			sqlFiles = append(sqlFiles, filepath.Join(walDir, file.Name()))
 		}
@@ -141,9 +154,9 @@ func lookForPendingWALFiles(walDir string, sortingMethod string, state *state) [
 	var pendingSQLFiles []string
 	switch sortingMethod {
 	case "change_time":
-		pendingSQLFiles, err = sortFilesByChangeTime(sqlFiles)
+		pendingSQLFiles, err = sort.SortFilesByChangeTime(sqlFiles)
 	case "hexadecimal":
-		pendingSQLFiles, err = sortFilesByName(sqlFiles)
+		pendingSQLFiles = sort.SortFilesByName(sqlFiles)
 	}
 	if err != nil {
 		panic(err)
@@ -173,16 +186,4 @@ func testConn(conn interface {
 		panic(err)
 	}
 	return true
-}
-
-func getFileName(path string) string {
-	return filepath.Base(path)
-}
-
-func arrayToMap[T string](array []T) map[T]struct{} {
-	m := make(map[T]struct{}, len(array))
-	for _, t := range array {
-		m[t] = struct{}{}
-	}
-	return m
 }

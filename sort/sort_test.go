@@ -1,4 +1,4 @@
-package main
+package sort
 
 import (
 	"fmt"
@@ -31,7 +31,7 @@ func TestSortFilesByChangeTime(t *testing.T) {
 	}
 
 	// Call the function to sort the files by creation time
-	sortedFiles, err := sortFilesByChangeTime(files)
+	sortedFiles, err := SortFilesByChangeTime(files)
 	if err != nil {
 		t.Fatalf("SortFilesByChangeTime failed: %v", err)
 	}
