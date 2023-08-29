@@ -65,8 +65,16 @@ func main() {
 	skipTxns.Store(false)
 	activeIngests := new(sync.WaitGroup)
 	parallelTxnChannel := make(chan *txn, *numWorkers)
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
 	for i := 0; i < *numWorkers; i++ {
-		w := NewWorker(i, pool, parallelTxnChannel, activeIngests)
+		w := &Worker{
+			ctx:      rootCtx,
+			id:       i,
+			conn:     pool,
+			incoming: parallelTxnChannel,
+			active:   activeIngests,
+		}
 		go w.Run()
 	}
 
@@ -114,6 +122,7 @@ func main() {
 	for {
 		pendingSQLFiles := lookForPendingWALFiles(absWalDir, *sortingMethod, state)
 		if len(pendingSQLFiles) > 0 {
+			log.Info("msg", fmt.Sprintf("Found %d files to be replayed", len(pendingSQLFiles)))
 			replayer.Replay(pendingSQLFiles)
 		} else {
 			log.Info("msg", "No files to replay")
@@ -124,7 +133,7 @@ func main() {
 }
 
 func lookForPendingWALFiles(walDir string, sortingMethod string, state *state) []string {
-	log.Info("msg", "Scanning for pending WAL files")
+	log.Debug("msg", "Scanning for pending WAL files")
 	files, err := os.ReadDir(walDir)
 	if err != nil {
 		log.Fatal("msg", "Error reading WAL path", "error", err.Error())
@@ -138,7 +147,6 @@ func lookForPendingWALFiles(walDir string, sortingMethod string, state *state) [
 			sqlFiles = append(sqlFiles, filepath.Join(walDir, file.Name()))
 		}
 	}
-	log.Info("msg", fmt.Sprintf("Found %d files to be replayed", len(sqlFiles)))
 
 	var pendingSQLFiles []string
 	switch sortingMethod {
