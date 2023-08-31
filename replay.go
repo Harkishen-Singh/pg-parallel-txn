@@ -25,10 +25,11 @@ type Replayer struct {
 	skipTxns             *atomic.Bool
 	parallelTxn          chan<- *txn
 	activeIngests        *sync.WaitGroup
-	state                *state
 	proceedLSNAfterBatch bool
 	commitQ              *commitqueue.CommitQueue
 	activeTxn            *txn
+	migrationProgress    *migrationState
+	performCatchup       bool
 }
 
 // Replay all the SQL files in order against the target and proceed the LSN in source database.
@@ -69,6 +70,18 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 				if err != nil {
 					log.Fatal("msg", "Error getting next txn", "err", err.Error())
 				}
+				if r.performCatchup {
+					// We need to catchup to the previous progress, and then start replaying the txns,
+					// otherwise we will repeat the transactions that have already been applied.
+					current_xid, current_lsn := t.commit.XID, t.commit.LSN
+					last_xid, last_lsn := r.migrationProgress.xid, r.migrationProgress.lsn
+					if current_xid == last_xid && current_lsn == last_lsn {
+						log.Info("msg", "found the txn upto which we had replayed previously. Resuming replay from the next txn")
+						r.performCatchup = false
+					}
+					t.refresh()
+					continue
+				}
 				r.commitQ.Enqueue(uint64(t.begin.XID))
 				txnCount++
 				if isInsertOnly(t.stmts) {
@@ -85,9 +98,7 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 						log.Fatal("msg", "Error executing a serial txn", "xid", t.begin.XID, "err", err.Error())
 					}
 				}
-				t.begin = nil
-				t.commit = nil
-				t.stmts = t.stmts[:0]
+				t.refresh()
 			}
 			if t.begin != nil && t.commit == nil {
 				// An open txn found. We need to carry this over to the next file.
@@ -100,10 +111,10 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 			}
 		}
 		start := time.Now()
-		r.state.UpdateCurrent(common.GetFileName(pendingFile))
-		if err := r.state.Write(); err != nil {
-			log.Fatal("msg", "Error writing state file", "err", err.Error())
-		}
+		// r.state.UpdateCurrent(common.GetFileName(pendingFile))
+		// if err := r.state.Write(); err != nil {
+		// 	log.Fatal("msg", "Error writing state file", "err", err.Error())
+		// }
 		replayFile(pendingFile)
 		// Let's wait for previous batch to complete before moving to the next batch.
 		if len(r.activeTxn.stmts) > 0 {
@@ -116,10 +127,10 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 			// Proceed LSN after batch completes is activated.
 			r.lsnp.Proceed()
 		}
-		r.state.MarkCurrentAsComplete()
-		if err := r.state.Write(); err != nil {
-			log.Fatal("msg", "Error writing state file", "err", err.Error())
-		}
+		// r.state.MarkCurrentAsComplete()
+		// if err := r.state.Write(); err != nil {
+		// 	log.Fatal("msg", "Error writing state file", "err", err.Error())
+		// }
 		log.Info("msg", "Proceeding state...")
 		log.Info("Done", time.Since(start).String())
 	}
@@ -135,6 +146,12 @@ type txn struct {
 	begin           *BeginMetadata
 	commit          *CommitMetadata
 	stmts           []string
+}
+
+func (t *txn) refresh() {
+	t.begin = nil
+	t.commit = nil
+	t.stmts = t.stmts[:0]
 }
 
 func (r *Replayer) readNextTxn(scanner *bufio.Scanner, t *txn) error {

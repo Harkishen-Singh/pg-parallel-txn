@@ -53,24 +53,18 @@ func main() {
 		log.Fatal("msg", "Please provide database URIs for '-target_uri' flags")
 	}
 
-	state, err := LoadOrCreateState()
-	if err != nil {
-		log.Fatal("msg", "Error loading state file", "error", err.Error())
-	}
-
 	pool := getPgxPool(targetUri, 1, int32(*maxConn))
 	defer pool.Close()
 	testConn(pool)
 	log.Info("msg", "Connected to target database")
 
-	progressTableExists, err := progress.TableExists(pool)
+	progressTracker, err := progress.NewTracker(pool)
 	if err != nil {
-		log.Fatal("msg", "Error checking if progress table exists", "err", err.Error())
+		log.Fatal("msg", "Error creating progress tracker in target db", "err", err.Error())
 	}
-	if !progressTableExists {
-		if err := progress.CreateProgressTable(pool); err != nil {
-			log.Fatal("msg", "Error creating progress table", "err", err.Error())
-		}
+	performCatchup := false
+	if progressTracker.LSN != "" {
+		performCatchup = true
 	}
 
 	skipTxns := new(atomic.Bool)
@@ -123,19 +117,35 @@ func main() {
 		panic(err)
 	}
 
-	replayer := Replayer{
+	replayer := &Replayer{
 		pool:                 pool,
 		lsnp:                 lsnp,
-		state:                state,
 		skipTxns:             skipTxns,
 		parallelTxn:          parallelTxnChannel,
 		activeIngests:        activeIngests,
 		commitQ:              commitQ,
 		proceedLSNAfterBatch: *proceedLSNAfterXids == 0,
+		migrationProgress:    migrationProgress,
+		performCatchup:       performCatchup,
 	}
 
 	for {
-		pendingSQLFiles := lookForPendingWALFiles(absWalDir, *sortingMethod, state)
+		walFiles := getWALFiles(absWalDir)
+		switch *sortingMethod {
+		case "change_time":
+			walFiles, err = sort.SortFilesByChangeTime(walFiles)
+		case "hexadecimal":
+			walFiles = sort.SortFilesByName(walFiles)
+		}
+		if err != nil {
+			panic(err)
+		}
+		pendingSQLFiles := []string{}
+		if replayer.performCatchup {
+			pendingSQLFiles = trimFiles(walFiles, "TODO", 2)
+		} else {
+			pendingSQLFiles = trimFiles(walFiles, "TODO", 0)
+		}
 		if len(pendingSQLFiles) > 0 {
 			log.Info("msg", fmt.Sprintf("Found %d files to be replayed", len(pendingSQLFiles)))
 			replayer.Replay(pendingSQLFiles)
@@ -147,33 +157,20 @@ func main() {
 	}
 }
 
-func lookForPendingWALFiles(walDir string, sortingMethod string, state *state) []string {
-	log.Debug("msg", "Scanning for pending WAL files")
+func getWALFiles(walDir string) []string {
+	log.Debug("msg", "Scanning for WAL files")
 	files, err := os.ReadDir(walDir)
 	if err != nil {
 		log.Fatal("msg", "Error reading WAL path", "error", err.Error())
 	}
 
-	completedFiles := common.ArrayToMap(state.CompletedFiles)
 	sqlFiles := []string{}
 	for _, file := range files {
-		_, processedPreviously := completedFiles[common.GetFileName(file.Name())]
-		if file.Type().IsRegular() && strings.HasSuffix(file.Name(), ".sql") && !processedPreviously {
+		if file.Type().IsRegular() && strings.HasSuffix(file.Name(), ".sql") {
 			sqlFiles = append(sqlFiles, filepath.Join(walDir, file.Name()))
 		}
 	}
-
-	var pendingSQLFiles []string
-	switch sortingMethod {
-	case "change_time":
-		pendingSQLFiles, err = sort.SortFilesByChangeTime(sqlFiles)
-	case "hexadecimal":
-		pendingSQLFiles = sort.SortFilesByName(sqlFiles)
-	}
-	if err != nil {
-		panic(err)
-	}
-	return pendingSQLFiles
+	return sqlFiles
 }
 
 func getPgxPool(uri *string, min, max int32) *pgxpool.Pool {
@@ -198,4 +195,24 @@ func testConn(conn interface {
 		panic(err)
 	}
 	return true
+}
+
+// trimFiles finds the location of 'upto', subtracts the 'buffer' from the location
+// and removes all files before it.
+// Note: files must be sorted in their expected order, otherwise trim would remove
+// the wrong files.
+func trimFiles(files []string, upto string, buffer int) []string {
+	pos := 0
+	for i, f := range files {
+		if common.FileNameWithoutExtension(f) == common.FileNameWithoutExtension(upto) {
+			pos = i+1 // Exclude the current file as well.
+			break
+		}
+	}
+	pos -= buffer
+	if pos < 0 {
+		pos = 0
+	}
+	files = files[pos:]
+	return files
 }
