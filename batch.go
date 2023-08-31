@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Harkishen-Singh/pg-parallel-txn/commit_queue"
+	"github.com/Harkishen-Singh/pg-parallel-txn/progress"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/timescale/promscale/pkg/log"
@@ -44,12 +45,14 @@ func doBatch(
 
 	// Wait for my commit turn.
 	for {
-		if xid := commitQ.Peek(); xid == uint64(t.begin.XID) {
+		if xid := commitQ.Peek(); xid == uint64(t.commit.XID) {
 			break
 		}
 		<-time.After(commitQueueCheckDuration)
 	}
-
+	if err := progress.Advance(newTxn.Conn(), uint64(t.commit.XID), t.commit.LSN); err != nil {
+		return fmt.Errorf("advance progress: xid(%d), lsn(%s): %w", t.commit.XID, t.commit.LSN, err)
+	}
 	if err := newTxn.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}

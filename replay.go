@@ -73,23 +73,14 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 				txnCount++
 				if isInsertOnly(t.stmts) {
 					r.parallelTxn <- t
-					log.Debug(
-						"msg", "execute parallel txn",
-						"xid", t.begin.XID,
-						"num_stmts", len(t.stmts),
-						"progress", fmt.Sprintf("%d/%d", txnCount, totalTxns))
+					log.Debug("msg", "execute parallel txn", "xid", t.begin.XID, "num_stmts", len(t.stmts), "progress", fmt.Sprintf("%d/%d", txnCount, totalTxns))
 				} else {
-					// Wait for scheduled parallel txns to complete.
-					log.Debug("msg", fmt.Sprintf(
-						"received a serial txn type (xid:%d); waiting for scheduled parallel txns to complete", t.begin.XID,
-					))
+					log.Debug("msg", fmt.Sprintf("received a serial txn type (xid:%d); waiting for scheduled parallel txns to complete", t.begin.XID))
 					r.activeIngests.Wait()
-					log.Debug(
-						"msg", "execute serial txn",
-						"xid", t.begin.XID,
-						"num_stmts", len(t.stmts),
-						"progress", fmt.Sprintf("%d/%d", txnCount, totalTxns))
-					// Now all parallel txns have completed. Let's do the serial txn.
+					if !r.commitQ.IsEmpty() {
+						panic("queue should have been empty after all active ingests are 0. Something is wrong in the workers")
+					}
+					log.Debug("msg", "execute serial txn", "xid", t.begin.XID, "num_stmts", len(t.stmts), "progress", fmt.Sprintf("%d/%d", txnCount, totalTxns))
 					if err := r.doSerialInsert(t); err != nil {
 						log.Fatal("msg", "Error executing a serial txn", "xid", t.begin.XID, "err", err.Error())
 					}
