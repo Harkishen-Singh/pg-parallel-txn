@@ -60,7 +60,7 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 				}
 			}
 			for {
-				err := r.nextTxn(scanner, t)
+				err := r.readNextTxn(scanner, t)
 				if err == io.EOF {
 					break
 				}
@@ -68,7 +68,29 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 					log.Fatal("msg", "Error getting next txn", "err", err.Error())
 				}
 				txnCount++
-				r.performTxn(t, txnCount, totalTxns)
+				if isInsertOnly(t.stmts) {
+					r.parallelTxn <- t
+					log.Debug(
+						"msg", "execute parallel txn",
+						"xid", t.begin.XID,
+						"num_stmts", len(t.stmts),
+						"progress", fmt.Sprintf("%d/%d", txnCount, totalTxns))
+				} else {
+					// Wait for scheduled parallel txns to complete.
+					log.Debug("msg", fmt.Sprintf(
+						"received a serial txn type (xid:%d); waiting for scheduled parallel txns to complete", t.begin.XID,
+					))
+					r.activeIngests.Wait()
+					log.Debug(
+						"msg", "execute serial txn",
+						"xid", t.begin.XID,
+						"num_stmts", len(t.stmts),
+						"progress", fmt.Sprintf("%d/%d", txnCount, totalTxns))
+					// Now all parallel txns have completed. Let's do the serial txn.
+					if err := r.doSerialInsert(t); err != nil {
+						log.Fatal("msg", "Error executing a serial txn", "xid", t.begin.XID, "err", err.Error())
+					}
+				}
 				t.begin = nil
 				t.commit = nil
 				t.stmts = t.stmts[:0]
@@ -121,7 +143,7 @@ type txn struct {
 	stmts           []string
 }
 
-func (r *Replayer) nextTxn(scanner *bufio.Scanner, t *txn) error {
+func (r *Replayer) readNextTxn(scanner *bufio.Scanner, t *txn) error {
 	for scanner.Scan() {
 		line := scanner.Text()
 		switch {
@@ -169,36 +191,6 @@ func (r *Replayer) nextTxn(scanner *bufio.Scanner, t *txn) error {
 		}
 	}
 	return io.EOF
-}
-
-func (r *Replayer) performTxn(
-	txn *txn,
-	txnCount int64,
-	totalTxns int64,
-) {
-	if isInsertOnly(txn.stmts) {
-		r.parallelTxn <- txn
-		log.Debug(
-			"msg", "execute parallel txn",
-			"xid", txn.begin.XID,
-			"num_stmts", len(txn.stmts),
-			"progress", fmt.Sprintf("%d/%d", txnCount, totalTxns))
-	} else {
-		// Wait for scheduled parallel txns to complete.
-		log.Debug("msg", fmt.Sprintf(
-			"received a serial txn type (xid:%d); waiting for scheduled parallel txns to complete", txn.begin.XID,
-		))
-		r.activeIngests.Wait()
-		log.Debug(
-			"msg", "execute serial txn",
-			"xid", txn.begin.XID,
-			"num_stmts", len(txn.stmts),
-			"progress", fmt.Sprintf("%d/%d", txnCount, totalTxns))
-		// Now all parallel txns have completed. Let's do the serial txn.
-		if err := r.doSerialInsert(txn); err != nil {
-			log.Fatal("msg", "Error executing a serial txn", "xid", txn.begin.XID, "err", err.Error())
-		}
-	}
 }
 
 func (r *Replayer) doSerialInsert(t *txn) error {
