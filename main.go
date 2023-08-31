@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/timescale/promscale/pkg/log"
 
+	commitqueue "github.com/Harkishen-Singh/pg-parallel-txn/commit_queue"
 	"github.com/Harkishen-Singh/pg-parallel-txn/common"
 	"github.com/Harkishen-Singh/pg-parallel-txn/format"
 	"github.com/Harkishen-Singh/pg-parallel-txn/sort"
@@ -65,6 +66,7 @@ func main() {
 	skipTxns.Store(false)
 	activeIngests := new(sync.WaitGroup)
 	parallelTxnChannel := make(chan *txn, *numWorkers)
+	commitQ := commitqueue.New(100_000)
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	defer rootCancel()
 	for i := 0; i < *numWorkers; i++ {
@@ -74,6 +76,7 @@ func main() {
 			conn:     pool,
 			incoming: parallelTxnChannel,
 			active:   activeIngests,
+			commitQ:  commitQ,
 		}
 		go w.Run()
 	}
@@ -116,6 +119,7 @@ func main() {
 		skipTxns:             skipTxns,
 		parallelTxn:          parallelTxnChannel,
 		activeIngests:        activeIngests,
+		commitQ:              commitQ,
 		proceedLSNAfterBatch: *proceedLSNAfterXids == 0,
 	}
 

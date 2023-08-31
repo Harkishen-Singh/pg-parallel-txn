@@ -5,11 +5,15 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
+	commitqueue "github.com/Harkishen-Singh/pg-parallel-txn/commit_queue"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/timescale/promscale/pkg/log"
 )
+
+const commitQueueCheckDuration = time.Millisecond * 10
 
 type Worker struct {
 	ctx      context.Context
@@ -17,6 +21,7 @@ type Worker struct {
 	conn     *pgxpool.Pool
 	incoming <-chan *txn
 	active   *sync.WaitGroup
+	commitQ  *commitqueue.CommitQueue
 }
 
 func (w *Worker) Run() {
@@ -31,7 +36,7 @@ func (w *Worker) Run() {
 		perform := func() {
 			batchCtx, batchCancel := context.WithCancel(w.ctx)
 			defer batchCancel()
-			if err := doBatch(batchCtx, w.conn, stmts); err != nil {
+			if err := doBatch(batchCtx, w.conn, w.commitQ, stmts); err != nil {
 				log.Fatal("msg", "error doBatch", "err", err.Error())
 			}
 		}
@@ -40,9 +45,14 @@ func (w *Worker) Run() {
 	}
 }
 
-var not_allowed_schemas = []string{"_timescaledb_catalog"}
+var schemasNotAllowed = []string{"_timescaledb_catalog"}
 
-func doBatch(ctx context.Context, conn *pgxpool.Pool, txn *txn) error {
+func doBatch(
+	ctx context.Context,
+	conn *pgxpool.Pool,
+	commitQ *commitqueue.CommitQueue,
+	t *txn,
+) error {
 	newTxn, err := conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
@@ -50,8 +60,8 @@ func doBatch(ctx context.Context, conn *pgxpool.Pool, txn *txn) error {
 	defer newTxn.Rollback(ctx)
 
 	batch := &pgx.Batch{}
-	for _, stmt := range txn.stmts {
-		if strings.Contains(stmt, not_allowed_schemas[0]) {
+	for _, stmt := range t.stmts {
+		if strings.Contains(stmt, schemasNotAllowed[0]) {
 			log.Warn("msg", "Skipping txn since it contained not permitted statements")
 		}
 		batch.Queue(stmt)
@@ -65,8 +75,17 @@ func doBatch(ctx context.Context, conn *pgxpool.Pool, txn *txn) error {
 		return fmt.Errorf("close: %w", err)
 	}
 
+	// Wait for my commit turn.
+	for {
+		if xid := commitQ.Peek(); xid == uint64(t.begin.XID) {
+			break
+		}
+		<-time.After(commitQueueCheckDuration)
+	}
+
 	if err := newTxn.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
+	commitQ.Dequeue()
 	return nil
 }

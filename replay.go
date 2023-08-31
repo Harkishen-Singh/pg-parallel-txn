@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Harkishen-Singh/pg-parallel-txn/commit_queue"
 	"github.com/Harkishen-Singh/pg-parallel-txn/common"
 	"github.com/Harkishen-Singh/pg-parallel-txn/format"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,6 +27,7 @@ type Replayer struct {
 	activeIngests        *sync.WaitGroup
 	state                *state
 	proceedLSNAfterBatch bool
+	commitQ              *commitqueue.CommitQueue
 	activeTxn            *txn
 }
 
@@ -67,6 +69,7 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 				if err != nil {
 					log.Fatal("msg", "Error getting next txn", "err", err.Error())
 				}
+				r.commitQ.Enqueue(uint64(t.begin.XID))
 				txnCount++
 				if isInsertOnly(t.stmts) {
 					r.parallelTxn <- t
@@ -194,7 +197,7 @@ func (r *Replayer) readNextTxn(scanner *bufio.Scanner, t *txn) error {
 }
 
 func (r *Replayer) doSerialInsert(t *txn) error {
-	if err := doBatch(r.ctx, r.pool, t); err != nil {
+	if err := doBatch(r.ctx, r.pool, r.commitQ, t); err != nil {
 		return fmt.Errorf("doBatch: %w", err)
 	}
 	return nil
