@@ -2,7 +2,6 @@ package progress
 
 import (
 	"context"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -13,6 +12,7 @@ create table public._timescale_pg_parallel_txn_progress (
 	time timestamptz not null,
 	xid bigint not null,
 	lsn text not null,
+	file text not null,
 	primary key (time, xid) -- This guards from duplicate txns.
 )`
 
@@ -21,10 +21,10 @@ func CreateProgressTable(conn *pgxpool.Pool) error {
 	return err
 }
 
-const advanceProgress = `insert into public._timescale_pg_parallel_txn_progress (time, xid, lsn) values (current_timestamp, $1, $2)`
+const advanceProgress = `insert into public._timescale_pg_parallel_txn_progress (time, xid, lsn, file) values (current_timestamp, $1, $2, $3)`
 
-func Advance(conn *pgx.Conn, xid uint64, lsn string) error {
-	_, err := conn.Exec(context.Background(), advanceProgress, time.Now())
+func Advance(conn *pgx.Conn, xid uint64, lsn, file string) error {
+	_, err := conn.Exec(context.Background(), advanceProgress, xid, lsn, file)
 	return err
 }
 
@@ -42,9 +42,9 @@ func TableExists(conn *pgxpool.Pool) (bool, error) {
 }
 
 // If 2 txns were commited at the same time, then the xid that is larger is the latter one that was received from pgcopydb
-const lastTxnDetails = `select xid::bigint, lsn::text from public._timescale_pg_parallel_txn_progress order by time, xid limit 1`
+const lastTxnDetails = `select xid::bigint, lsn::text, file::text from public._timescale_pg_parallel_txn_progress order by time, xid limit 1`
 
-func LastTxnDetails(conn *pgxpool.Pool) (xid uint64, lsn string, err error) {
-	err = conn.QueryRow(context.Background(), lastTxnDetails).Scan(&xid, &lsn)
+func LastTxnDetails(conn *pgxpool.Pool) (xid uint64, lsn, file string, err error) {
+	err = conn.QueryRow(context.Background(), lastTxnDetails).Scan(&xid, &lsn, &file)
 	return
 }

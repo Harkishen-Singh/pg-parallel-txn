@@ -20,6 +20,7 @@ import (
 	commitqueue "github.com/Harkishen-Singh/pg-parallel-txn/commit_queue"
 	"github.com/Harkishen-Singh/pg-parallel-txn/common"
 	"github.com/Harkishen-Singh/pg-parallel-txn/format"
+	"github.com/Harkishen-Singh/pg-parallel-txn/progress"
 	"github.com/Harkishen-Singh/pg-parallel-txn/sort"
 )
 
@@ -61,6 +62,16 @@ func main() {
 	defer pool.Close()
 	testConn(pool)
 	log.Info("msg", "Connected to target database")
+
+	progressTableExists, err := progress.TableExists(pool)
+	if err != nil {
+		log.Fatal("msg", "Error checking if progress table exists", "err", err.Error())
+	}
+	if !progressTableExists {
+		if err := progress.CreateProgressTable(pool); err != nil {
+			log.Fatal("msg", "Error creating progress table", "err", err.Error())
+		}
+	}
 
 	skipTxns := new(atomic.Bool)
 	skipTxns.Store(false)
