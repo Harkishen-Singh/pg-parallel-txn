@@ -62,9 +62,9 @@ func main() {
 	if err != nil {
 		log.Fatal("msg", "Error creating progress tracker in target db", "err", err.Error())
 	}
-	performCatchup := false
-	if progressTracker.LSN != "" {
-		performCatchup = true
+	performCatchupOnStart := false
+	if progressTracker.HasAnyProgress() {
+		performCatchupOnStart = true
 	}
 
 	skipTxns := new(atomic.Bool)
@@ -118,15 +118,15 @@ func main() {
 	}
 
 	replayer := &Replayer{
-		pool:                 pool,
-		lsnp:                 lsnp,
-		skipTxns:             skipTxns,
-		parallelTxn:          parallelTxnChannel,
-		activeIngests:        activeIngests,
-		commitQ:              commitQ,
-		proceedLSNAfterBatch: *proceedLSNAfterXids == 0,
-		migrationProgress:    migrationProgress,
-		performCatchup:       performCatchup,
+		pool:                  pool,
+		lsnp:                  lsnp,
+		skipTxns:              skipTxns,
+		parallelTxn:           parallelTxnChannel,
+		activeIngests:         activeIngests,
+		commitQ:               commitQ,
+		proceedLSNAfterBatch:  *proceedLSNAfterXids == 0,
+		tracker:               progressTracker,
+		performCatchupOnStart: performCatchupOnStart,
 	}
 
 	for {
@@ -141,11 +141,12 @@ func main() {
 			panic(err)
 		}
 		pendingSQLFiles := []string{}
-		if replayer.performCatchup {
-			pendingSQLFiles = trimFiles(walFiles, "TODO", 2)
-		} else {
-			pendingSQLFiles = trimFiles(walFiles, "TODO", 0)
+		_, last_walfile := progressTracker.LastProgressDetails()
+		buffer := 0
+		if replayer.performCatchupOnStart {
+			buffer = 2
 		}
+		pendingSQLFiles = trimFiles(walFiles, last_walfile, buffer)
 		if len(pendingSQLFiles) > 0 {
 			log.Info("msg", fmt.Sprintf("Found %d files to be replayed", len(pendingSQLFiles)))
 			replayer.Replay(pendingSQLFiles)
@@ -205,7 +206,7 @@ func trimFiles(files []string, upto string, buffer int) []string {
 	pos := 0
 	for i, f := range files {
 		if common.FileNameWithoutExtension(f) == common.FileNameWithoutExtension(upto) {
-			pos = i+1 // Exclude the current file as well.
+			pos = i + 1 // Exclude the current file as well.
 			break
 		}
 	}

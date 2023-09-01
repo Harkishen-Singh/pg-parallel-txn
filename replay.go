@@ -14,22 +14,23 @@ import (
 	"github.com/Harkishen-Singh/pg-parallel-txn/commit_queue"
 	"github.com/Harkishen-Singh/pg-parallel-txn/common"
 	"github.com/Harkishen-Singh/pg-parallel-txn/format"
+	"github.com/Harkishen-Singh/pg-parallel-txn/progress"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/timescale/promscale/pkg/log"
 )
 
 type Replayer struct {
-	ctx                  context.Context
-	pool                 *pgxpool.Pool
-	lsnp                 LSNProceeder
-	skipTxns             *atomic.Bool
-	parallelTxn          chan<- *txn
-	activeIngests        *sync.WaitGroup
-	proceedLSNAfterBatch bool
-	commitQ              *commitqueue.CommitQueue
-	activeTxn            *txn
-	migrationProgress    *migrationState
-	performCatchup       bool
+	ctx  context.Context
+	pool *pgxpool.Pool
+	// lsnp                  LSNProceeder // todo: remove lsn proceeder and make it an independent routine
+	skipTxns              *atomic.Bool
+	parallelTxn           chan<- *txn
+	activeIngests         *sync.WaitGroup
+	proceedLSNAfterBatch  bool
+	commitQ               *commitqueue.CommitQueue
+	activeTxn             *txn
+	tracker               *progress.Tracker
+	performCatchupOnStart bool
 }
 
 // Replay all the SQL files in order against the target and proceed the LSN in source database.
@@ -70,14 +71,14 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 				if err != nil {
 					log.Fatal("msg", "Error getting next txn", "err", err.Error())
 				}
-				if r.performCatchup {
+				if r.performCatchupOnStart {
 					// We need to catchup to the previous progress, and then start replaying the txns,
 					// otherwise we will repeat the transactions that have already been applied.
-					current_xid, current_lsn := t.commit.XID, t.commit.LSN
-					last_xid, last_lsn := r.migrationProgress.xid, r.migrationProgress.lsn
-					if current_xid == last_xid && current_lsn == last_lsn {
+					current_lsn, current_file := t.commit.LSN, filePath
+					last_lsn, last_file := r.tracker.LastProgressDetails()
+					if current_lsn == last_lsn && common.FileNameWithoutExtension(current_file) == common.FileNameWithoutExtension(last_file) {
 						log.Info("msg", "found the txn upto which we had replayed previously. Resuming replay from the next txn")
-						r.performCatchup = false
+						r.performCatchupOnStart = false
 					}
 					t.refresh()
 					continue
@@ -111,10 +112,6 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 			}
 		}
 		start := time.Now()
-		// r.state.UpdateCurrent(common.GetFileName(pendingFile))
-		// if err := r.state.Write(); err != nil {
-		// 	log.Fatal("msg", "Error writing state file", "err", err.Error())
-		// }
 		replayFile(pendingFile)
 		// Let's wait for previous batch to complete before moving to the next batch.
 		if len(r.activeTxn.stmts) > 0 {
@@ -122,16 +119,7 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 				fmt.Sprintf("found a txn (xid:%d) that stretches beyond current file. Holding its contents till the previous batch completes", commitMetadata.XID))
 		}
 		log.Info("msg", "Waiting for batch to complete")
-		r.activeIngests.Wait()
-		if r.proceedLSNAfterBatch {
-			// Proceed LSN after batch completes is activated.
-			r.lsnp.Proceed()
-		}
-		// r.state.MarkCurrentAsComplete()
-		// if err := r.state.Write(); err != nil {
-		// 	log.Fatal("msg", "Error writing state file", "err", err.Error())
-		// }
-		log.Info("msg", "Proceeding state...")
+		r.activeIngests.Wait() // Todo: this wait is optional. We can survive without this wait as well.
 		log.Info("Done", time.Since(start).String())
 	}
 	log.Info("msg", "Replaying of SQL files batch completed", "num_files_replayed", len(pendingSQLFilesInOrder))

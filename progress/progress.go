@@ -3,83 +3,99 @@ package progress
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const replicationOriginName = "pg-parallel-txn-progress"
+
 type Tracker struct {
-	conn *pgxpool.Pool
+	mux       sync.RWMutex
+	conn      *pgxpool.Pool
 	LSN, File string
-	XID       uint64
 }
 
 func NewTracker(conn *pgxpool.Pool) (*Tracker, error) {
 	tr := &Tracker{conn: conn}
-	exists, err := progressTableExists(tr.conn)
+	exists, err := originExists(tr.conn)
 	if err != nil {
 		return nil, fmt.Errorf("progress table exists: %w", err)
 	}
 	if !exists {
-		if err = createProgressTable(tr.conn); err != nil {
+		if err = createOrigin(tr.conn); err != nil {
 			return nil, fmt.Errorf("create progress table: %w", err)
+		}
+		if err = tr.markAsCurrent(); err != nil {
+			return nil, fmt.Errorf("setup after createOrigin: %w", err)
 		}
 		return tr, nil
 	}
-	last_xid, last_lsn, last_file, err := lastTxnDetails(conn)
+	if err = tr.markAsCurrent(); err != nil {
+		return nil, fmt.Errorf("setup after fetching details of last txn: %w", err)
+	}
+	last_lsn, last_file, err := lastTxnDetails(conn)
 	if err != nil {
 		return nil, fmt.Errorf("get last txn details: %w", err)
 	}
 	tr.File = last_file
 	tr.LSN = last_lsn
-	tr.XID = last_xid
 	return tr, nil
 }
 
-const createProgressTableSQL = `
-create table public._timescale_pg_parallel_txn_progress (
-	time timestamptz not null,
-	xid bigint not null,
-	lsn text not null,
-	file text not null,
-	primary key (time, xid) -- This guards from duplicate txns.
-)`
+func (tr *Tracker) HasAnyProgress() bool {
+	tr.mux.RLock()
+	defer tr.mux.RUnlock()
+	return tr.LSN != ""
+}
 
-func createProgressTable(conn *pgxpool.Pool) error {
-	_, err := conn.Exec(context.Background(), createProgressTableSQL)
+func (tr *Tracker) LastProgressDetails() (lsn, walfile string) {
+	tr.mux.RLock()
+	defer tr.mux.RUnlock()
+	return tr.LSN, tr.File
+}
+
+func (tr *Tracker) markAsCurrent() error {
+	tr.mux.Lock()
+	defer tr.mux.Unlock()
+	_, err := tr.conn.Exec(context.Background(), `select pg_replication_origin_session_setup($1::text)`, replicationOriginName)
 	return err
 }
 
-const advanceProgressSQL = `insert into public._timescale_pg_parallel_txn_progress (time, xid, lsn, file) values (current_timestamp, $1, $2, $3)`
+func createOrigin(conn *pgxpool.Pool) error {
+	_, err := conn.Exec(context.Background(), `select pg_replication_origin_create($1::text)`, replicationOriginName)
+	return err
+}
 
-func (tr *Tracker) Advance(txConn *pgx.Conn, xid uint64, lsn, file string) error {
-	_, err := txConn.Exec(context.Background(), advanceProgressSQL, xid, lsn, file)
-	if err != nil {
+// Advance proceeds the LSN pointer in replication origin in the same txn by using the transactional connection.
+// Todo(harkishen): Make proceeding LSN pointer part of the pgx.SendBatch() that contains the txn data.
+func (tr *Tracker) Advance(txConn *pgx.Conn, lsn, file string) error {
+	tr.mux.Lock()
+	defer tr.mux.Unlock()
+	if _, err := txConn.Exec(context.Background(), `select pg_replication_origin_advance($1::text, $2::pg_lsn)`, replicationOriginName, lsn); err != nil {
 		return fmt.Errorf("error advancing progress: %w", err)
 	}
 	tr.File = file
 	tr.LSN = lsn
-	tr.XID = xid
-	return err
+	return nil
 }
 
-const tableExistSQL = `
-select exists (
-	select from information_schema.tables
-	where  table_schema = 'public'
-	and    table_name   = '_timescale_pg_parallel_txn_progress'
-)`
-
-func progressTableExists(conn *pgxpool.Pool) (bool, error) {
-	var exists bool
-	err := conn.QueryRow(context.Background(), tableExistSQL).Scan(&exists)
-	return exists, err
+func originExists(conn *pgxpool.Pool) (bool, error) {
+	originID := new(int32)
+	err := conn.QueryRow(context.Background(), `select pg_replication_origin_oid($1::text)`, replicationOriginName).Scan(&originID)
+	return originID != nil, err
 }
 
-// If 2 txns were commited at the same time, then the xid that is larger is the latter one that was received from pgcopydb
-const lastTxnDetailsSQL = `select xid::bigint, lsn::text, file::text from public._timescale_pg_parallel_txn_progress order by time, xid limit 1`
+const lastTxnDetailsSQL = `
+select
+	a.lsn::text as lsn,
+	pg_walfile_name(a.lsn)::text walfile
+from (
+	select pg_replication_origin_session_progress(false) as lsn
+) a`
 
-func lastTxnDetails(conn *pgxpool.Pool) (xid uint64, lsn, file string, err error) {
-	err = conn.QueryRow(context.Background(), lastTxnDetailsSQL).Scan(&xid, &lsn, &file)
+func lastTxnDetails(conn *pgxpool.Pool) (lsn, file string, err error) {
+	err = conn.QueryRow(context.Background(), lastTxnDetailsSQL).Scan(&lsn, &file)
 	return
 }
