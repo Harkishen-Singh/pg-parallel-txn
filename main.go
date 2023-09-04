@@ -64,7 +64,7 @@ func main() {
 	skipTxns := new(atomic.Bool)
 	skipTxns.Store(false)
 	activeIngests := new(sync.WaitGroup)
-	parallelTxnChannel := make(chan *txn)
+	parallelTxnChannel := make(chan *txn, 100)
 	for i := 0; i < *numWorkers; i++ {
 		w := NewWorker(i, pool, parallelTxnChannel, activeIngests)
 		go w.Run()

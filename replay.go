@@ -138,16 +138,16 @@ func (r *Replayer) Replay(pendingSQLFilesInOrder []string) {
 		}
 		replayFile(pendingFile)
 		// Let's wait for previous batch to complete before moving to the next batch.
-		if len(r.activeTxn.stmts) > 0 {
-			log.Debug("msg",
-				fmt.Sprintf("found a txn (xid:%d) that stretches beyond current file. Holding its contents till the previous batch completes", commitMetadata.XID))
-		}
-		log.Info("msg", "Waiting for batch to complete")
-		r.activeIngests.Wait()
-		if r.proceedLSNAfterBatch {
-			// Proceed LSN after batch completes is activated.
-			r.lsnp.Proceed()
-		}
+		// if len(r.activeTxn.stmts) > 0 {
+		// 	log.Debug("msg",
+		// 		fmt.Sprintf("found a txn (xid:%d) that stretches beyond current file. Holding its contents till the previous batch completes", commitMetadata.XID))
+		// }
+		// log.Info("msg", "Waiting for batch to complete")
+		// r.activeIngests.Wait()
+		// if r.proceedLSNAfterBatch {
+		// 	// Proceed LSN after batch completes is activated.
+		// 	r.lsnp.Proceed()
+		// }
 		r.state.MarkCurrentAsComplete()
 		if err := r.state.Write(); err != nil {
 			log.Fatal("msg", "Error writing state file", "err", err.Error())
