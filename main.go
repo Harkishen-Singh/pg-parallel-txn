@@ -34,7 +34,7 @@ func main() {
 	proceedLSNAfterXids := flag.Int64("proceed_lsn_after", PROCEED_AFTER_BATCH, "Proceed LSN marker in Source DB after '-proceed_lsn_after' txns. "+
 		"A higher number causes less interruption in parallelism, but risks more duplicate data in case of a crash. "+
 		"If 0, LSN pointer proceeds after a batch completes. The size of a typical batch is the number of txns in a WAL file.")
-	noProceed := flag.Bool("no_lsn_proceed", false, "Development only. Do not proceed LSN. Source db uri is not needed.")
+	noProceed := flag.Bool("no_lsn_proceed", false, "Development only. Do not proceed LSN.")
 	sortingMethod := flag.String("file_sorting_method", "hexadecimal", "Method to use for sorting WAL files to apply in order. "+
 		"Valid: [change_time, hexadecimal]")
 	flag.Parse()
@@ -47,8 +47,8 @@ func main() {
 		panic(err)
 	}
 
-	if *targetUri == "" {
-		log.Fatal("msg", "Please provide database URIs for '-target_uri' flags")
+	if *targetUri == "" || *sourceUri == "" {
+		log.Fatal("msg", "Please provide database URIs for '-target_uri' & '-source_uri' flags")
 	}
 
 	state, err := LoadOrCreateState()
@@ -64,7 +64,7 @@ func main() {
 	skipTxns := new(atomic.Bool)
 	skipTxns.Store(false)
 	activeIngests := new(sync.WaitGroup)
-	parallelTxnChannel := make(chan *txn, *numWorkers)
+	parallelTxnChannel := make(chan *txn)
 	for i := 0; i < *numWorkers; i++ {
 		w := NewWorker(i, pool, parallelTxnChannel, activeIngests)
 		go w.Run()
@@ -82,18 +82,20 @@ func main() {
 		os.Exit(0)
 	}()
 
+	// Connect to source db for chunk to hypertable mapping.
+	sourceConn, err := pgx.Connect(context.Background(), *sourceUri)
+	if err != nil {
+		log.Fatal("msg", "Unable to connect to source database", "err", err.Error())
+	}
+	defer sourceConn.Close(context.Background())
+	testConn(sourceConn)
+	log.Info("msg", "Connected to source database")
+	format.CompleteMapping(sourceConn)
+
 	// Setup LSN proceeder.
 	lsnp := NewNoopProceeder()
 	if !*noProceed {
-		sourceConn, err := pgx.Connect(context.Background(), *sourceUri)
-		if err != nil {
-			log.Fatal("msg", "Unable to connect to source database", "err", err.Error())
-		}
-		defer sourceConn.Close(context.Background())
-		testConn(sourceConn)
-		log.Info("msg", "Connected to source database")
 		lsnp = NewLSNProceeder(sourceConn, *proceedLSNAfterXids, activeIngests)
-		format.CompleteMapping(sourceConn)
 	}
 
 	absWalDir, err := filepath.Abs(*walPath)
