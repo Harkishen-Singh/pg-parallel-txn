@@ -19,6 +19,7 @@ type Worker struct {
 	conn     *pgxpool.Pool
 	incoming <-chan *txn
 	active   *sync.WaitGroup
+	// todo next: add a tracker
 	commitQ  *commitqueue.CommitQueue
 }
 

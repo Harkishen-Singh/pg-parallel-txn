@@ -111,6 +111,7 @@ func main() {
 		lsnp = NewLSNProceeder(sourceConn, *proceedLSNAfterXids, activeIngests)
 		format.CompleteMapping(sourceConn)
 	}
+	_ = lsnp
 
 	absWalDir, err := filepath.Abs(*walPath)
 	if err != nil {
@@ -119,7 +120,6 @@ func main() {
 
 	replayer := &Replayer{
 		pool:                  pool,
-		lsnp:                  lsnp,
 		skipTxns:              skipTxns,
 		parallelTxn:           parallelTxnChannel,
 		activeIngests:         activeIngests,

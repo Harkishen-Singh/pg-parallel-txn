@@ -18,6 +18,7 @@ var schemasNotAllowed = []string{"_timescaledb_catalog"}
 
 func doBatch(
 	ctx context.Context,
+	tracker *progress.Tracker,
 	conn *pgxpool.Pool,
 	commitQ *commitqueue.CommitQueue,
 	t *txn,
@@ -51,7 +52,7 @@ func doBatch(
 		}
 		<-time.After(commitQueueCheckDuration)
 	}
-	if err := progress.Advance(newTxn.Conn(), uint64(t.commit.XID), t.commit.LSN, common.FileNameWithoutExtension(t.currentFilePath)); err != nil {
+	if err := tracker.Advance(newTxn.Conn(), t.commit.LSN, common.FileNameWithoutExtension(t.currentFilePath)); err != nil {
 		return fmt.Errorf("advance progress: xid(%d), lsn(%s): %w", t.commit.XID, t.commit.LSN, err)
 	}
 	if err := newTxn.Commit(ctx); err != nil {

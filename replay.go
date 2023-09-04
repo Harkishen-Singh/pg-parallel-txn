@@ -193,7 +193,7 @@ func (r *Replayer) readNextTxn(scanner *bufio.Scanner, t *txn) error {
 }
 
 func (r *Replayer) doSerialInsert(t *txn) error {
-	if err := doBatch(r.ctx, r.pool, r.commitQ, t); err != nil {
+	if err := doBatch(r.ctx, r.tracker, r.pool, r.commitQ, t); err != nil {
 		return fmt.Errorf("doBatch: %w", err)
 	}
 	return nil
